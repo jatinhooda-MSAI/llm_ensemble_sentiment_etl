@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+secrets/
+keys/
+*.pem
+*.key
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+._*
+
+# Logs and temporary files
+logs/
+*.log
+tmp/
+temp/
+*.tmp
+
+# Local data dumps (keep data out of git; SQL, JSON and the data dictionary are tracked)
+data/
+datasets/
+*.csv
+*.parquet
+
+# Model artifacts
+*.pkl
+*.joblib
+*.pth
+*.h5
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.gz
+
+# Generated analysis outputs (reproducible from analysis/*.py)
+analysis/revision_audit/
