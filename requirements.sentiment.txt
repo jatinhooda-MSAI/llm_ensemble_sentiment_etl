@@ -1,0 +1,9 @@
+# Sentiment ingestion (bronze) — the only deps etl/sentiment_ingestion needs,
+# kept separate so the container stays slim.
+feedparser==6.0.10
+requests==2.31.0
+beautifulsoup4==4.12.2
+lxml>=4.9.3
+langdetect==1.0.9
+PyYAML>=6.0
+google-cloud-bigquery>=3.12.0
