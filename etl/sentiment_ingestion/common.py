@@ -31,6 +31,11 @@ from etl.sentiment_ingestion.config import (
 
 log = logging.getLogger("sentiment_ingestion")
 
+# Tracking params stripped from canonical URLs (dictionary: "strip tracking params")
+_TRACKING_PARAM_RE = re.compile(
+    r"^(utm_|at_|ns_)|^(fbclid|gclid|msclkid|ocid|cmp|xtor|ref)$", re.IGNORECASE
+)
+
 # ── HTTP ──────────────────────────────────────────────────────────────────────
 
 def make_session(accept_language: Optional[str] = None) -> requests.Session:
@@ -81,3 +86,25 @@ def parse_entry_date(entry) -> tuple:
             except ValueError:
                 continue
     return None, raw
+
+
+def strip_html(html: str) -> str:
+    if not html:
+        return ""
+    try:
+        return BeautifulSoup(html, "lxml").get_text(" ", strip=True)
+    except Exception:
+        return html
+
+
+def canonicalize_url(url: str) -> str:
+    """Strip tracking query params and fragments; keep everything else."""
+    if not url:
+        return url
+    try:
+        parts = urlparse(url)
+        kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+                if not _TRACKING_PARAM_RE.match(k)]
+        return urlunparse(parts._replace(query=urlencode(kept), fragment=""))
+    except Exception:
+        return url
