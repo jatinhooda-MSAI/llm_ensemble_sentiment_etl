@@ -42,3 +42,41 @@ USER_AGENT = (
 DEFAULT_TIMEOUT = 15  # seconds per HTTP request
 MIN_BODY_CHARS = 100  # below this a scraped body is considered a failure
 MIN_BODY_WORDS = 80   # short blurbs/teasers are not accepted as articles
+
+
+@dataclass
+class SourceConfig:
+    key: str                       # config key, e.g. "bbc_swahili"
+    source_id: str                 # governed ID, e.g. "SRC_BBC_SWAHILI"
+    name: str
+    source_class: str
+    feeds: list
+    language_iso639_3: str
+    script_iso15924: str
+    accept_language: Optional[str] = None
+    allowed_domains: list = field(default_factory=list)
+    body_selectors: list = field(default_factory=list)
+    body_exclude_selectors: list = field(default_factory=list)
+    excluded_tags: list = field(default_factory=list)
+    excluded_url_patterns: list = field(default_factory=list)
+    article_delay: float = 1.0
+    prefer_feed_content: bool = False
+    # Feed paging for feeds that list fewer entries than a run interval
+    # produces (e.g. WordPress ?paged=N). Unpaginated feeds read one page.
+    feed_pagination: Optional[str] = None
+    max_feed_pages: int = 1
+    # Stop paging once a page contains an already-ingested entry (caught up
+    # with the previous run). Backfills turn this off and rely on the
+    # --days cutoff and the page cap instead.
+    stop_paging_on_known: bool = True
+
+
+def load_sources(path: Path = SOURCES_YAML) -> dict:
+    """Load all source configs keyed by their config key."""
+    with open(path, encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+
+    sources = {}
+    for key, cfg in raw.items():
+        sources[key] = SourceConfig(key=key, **cfg)
+    return sources
