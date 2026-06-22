@@ -108,3 +108,46 @@ def canonicalize_url(url: str) -> str:
         return urlunparse(parts._replace(query=urlencode(kept), fragment=""))
     except Exception:
         return url
+
+
+def content_version(title: str, body: str) -> str:
+    """sha256 over title+body — the bronze source_version / content hash."""
+    payload = f"{title or ''}\n{body or ''}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def normalize_for_fingerprint(text: str) -> str:
+    """Normalize presentation-only differences without rewriting words.
+
+    NFKC unifies equivalent Unicode forms; combining marks, format controls,
+    punctuation and repeated whitespace are ignored. Letters, digits and
+    symbols remain, so changed facts still create a new fingerprint.
+    """
+    normalized = unicodedata.normalize("NFKC", text or "").casefold()
+    chars = []
+    for char in normalized:
+        category = unicodedata.category(char)
+        if category in {"Mn", "Me", "Cf"}:
+            continue
+        if category.startswith("P") or category.startswith("Z"):
+            chars.append(" ")
+        else:
+            chars.append(char)
+    return " ".join("".join(chars).split())
+
+
+def normalized_content_version(title: str, body: str) -> str:
+    """Hash lexical content after presentation-only normalization."""
+    payload = normalize_for_fingerprint(f"{title or ''}\n{body or ''}")
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def document_id(source_id: str, record_id: str, canonical_url: str) -> str:
+    """Stable article identity, independent of article revisions.
+
+    Prefer the canonical URL because some feeds rotate GUIDs for the same
+    page. Fall back to the provider-native record ID when no URL exists.
+    """
+    identity = canonicalize_url(canonical_url) or (record_id or "").strip()
+    payload = f"{source_id}\n{identity}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
