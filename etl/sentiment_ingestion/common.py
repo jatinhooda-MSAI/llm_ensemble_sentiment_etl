@@ -151,3 +151,40 @@ def document_id(source_id: str, record_id: str, canonical_url: str) -> str:
     identity = canonicalize_url(canonical_url) or (record_id or "").strip()
     payload = f"{source_id}\n{identity}".encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def feed_stamp(entry) -> str:
+    """
+    Feed-level change stamp for an entry: its updated (or published) string.
+
+    Compared exactly against the stamp stored in bronze
+    (payload.feed_entry.updated_raw/published_raw) to decide whether a known
+    GUID needs its article page re-fetched — edit detection without a
+    download. Empty stamps never match, so undated entries are always
+    re-fetched and left to the content-hash dedup.
+    """
+    return entry.get("updated") or entry.get("published") or ""
+
+
+FEED_PAGE_PARAMS = {"wordpress": "paged"}
+
+
+def feed_page_url(feed_url: str, page: int, pagination: Optional[str]) -> str:
+    """URL of the given 1-based feed page; page 1 is the feed URL itself."""
+    if page <= 1 or not pagination:
+        return feed_url
+    if pagination not in FEED_PAGE_PARAMS:
+        raise ValueError(f"Unknown feed_pagination {pagination!r}; "
+                         f"expected one of {sorted(FEED_PAGE_PARAMS)}")
+    param = FEED_PAGE_PARAMS[pagination]
+    parts = urlparse(feed_url)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+             if k != param]
+    query.append((param, str(page)))
+    return urlunparse(parts._replace(query=urlencode(query)))
+
+
+def utc_str(dt: Optional[datetime]) -> Optional[str]:
+    if dt is None:
+        return None
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
