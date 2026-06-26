@@ -31,6 +31,24 @@ from etl.sentiment_ingestion.config import (
 
 log = logging.getLogger("sentiment_ingestion")
 
+# langdetect is optional at import time so offline paths (tests, dry-run
+# payload assembly) degrade gracefully if it's missing.
+try:
+    from langdetect import DetectorFactory, detect_langs
+
+    DetectorFactory.seed = 0  # deterministic results
+    _LANGDETECT_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _LANGDETECT_AVAILABLE = False
+
+# ── Language code mapping (langdetect emits ISO 639-1; dictionary wants 639-3) ──
+
+ISO639_1_TO_3 = {
+    "sw": "swa", "ar": "ara", "fr": "fra", "en": "eng", "pt": "por",
+    "am": "amh", "so": "som", "af": "afr", "mg": "mlg", "rw": "kin",
+    "es": "spa", "it": "ita", "de": "deu", "nl": "nld", "tr": "tur",
+}
+
 # Tracking params stripped from canonical URLs (dictionary: "strip tracking params")
 _TRACKING_PARAM_RE = re.compile(
     r"^(utm_|at_|ns_)|^(fbclid|gclid|msclkid|ocid|cmp|xtor|ref)$", re.IGNORECASE
@@ -188,3 +206,22 @@ def utc_str(dt: Optional[datetime]) -> Optional[str]:
     if dt is None:
         return None
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ── Language validation ──────────────────────────────────────────────
+
+def detect_language(text: str) -> dict:
+    """Return {'detected_iso639_1', 'detected_iso639_3', 'detection_confidence'}."""
+    result = {"detected_iso639_1": None, "detected_iso639_3": None,
+              "detection_confidence": None}
+    if not _LANGDETECT_AVAILABLE or not text or len(text.strip()) < 20:
+        return result
+    try:
+        best = detect_langs(text[:1000])[0]
+        code1 = best.lang.split("-")[0]  # zh-cn style → zh
+        result["detected_iso639_1"] = code1
+        result["detected_iso639_3"] = ISO639_1_TO_3.get(code1)
+        result["detection_confidence"] = round(float(best.prob), 4)
+    except Exception:
+        pass
+    return result
