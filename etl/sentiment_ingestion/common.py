@@ -225,3 +225,52 @@ def detect_language(text: str) -> dict:
     except Exception:
         pass
     return result
+
+
+# ── Article body scraping ─────────────────────────────────────────────────────
+
+def scrape_body(session: requests.Session, url: str, selectors: list, *,
+                allowed_domains: list, delay: float,
+                exclude_selectors: Optional[list] = None,
+                conditional_headers: Optional[dict] = None,
+                timeout: int = DEFAULT_TIMEOUT,
+                min_chars: int = MIN_BODY_CHARS) -> tuple:
+    """
+    Fetch an article page and extract body text via the first selector that
+    yields >= min_chars. Returns (text, fetch_meta) — meta carries what the
+    raw-manifest layer would normally record.
+    """
+    meta = {"http_status": None, "final_url": None, "error": None,
+            "etag": None, "last_modified": None}
+    if not url or (allowed_domains and not any(d in url for d in allowed_domains)):
+        meta["error"] = "domain_not_allowed"
+        return "", meta
+    try:
+        time.sleep(delay)  # politeness before every article fetch
+        r = session.get(url, timeout=timeout, headers=conditional_headers or {})
+        meta["http_status"] = r.status_code
+        meta["final_url"] = r.url
+        meta["etag"] = r.headers.get("ETag")
+        meta["last_modified"] = r.headers.get("Last-Modified")
+        if r.status_code == 304:
+            meta["error"] = "not_modified"
+            return "", meta
+        if r.status_code != 200:
+            meta["error"] = f"http_{r.status_code}"
+            return "", meta
+        soup = BeautifulSoup(r.text, "lxml")
+        for tag in soup(["script", "style", "aside", "nav", "footer"]):
+            tag.decompose()
+        for selector in exclude_selectors or []:
+            for node in soup.select(selector):
+                node.decompose()
+        for selector in selectors:
+            paras = soup.select(selector)
+            if paras:
+                text = " ".join(p.get_text(" ", strip=True) for p in paras)
+                if len(text) >= min_chars:
+                    return text, meta
+        meta["error"] = "no_selector_matched"
+    except Exception as exc:
+        meta["error"] = f"{type(exc).__name__}: {exc}"
+    return "", meta
