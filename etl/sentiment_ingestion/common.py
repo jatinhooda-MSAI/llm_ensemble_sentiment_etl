@@ -274,3 +274,80 @@ def scrape_body(session: requests.Session, url: str, selectors: list, *,
     except Exception as exc:
         meta["error"] = f"{type(exc).__name__}: {exc}"
     return "", meta
+
+
+# ── Bronze row assembly ───────────────────────────────────────────────────────
+
+def build_bronze_row(cfg: SourceConfig, *, record_id: str, title: str,
+                     summary_html: str, body_text: str, body_source: Optional[str],
+                     link: str, author: Optional[str], tags: list,
+                     published_utc: Optional[datetime], raw_dates: dict,
+                     fetch_meta: dict, feed_url: str,
+                     fetched_at: datetime,
+                     raw_title: Optional[str] = None) -> dict:
+    """Assemble one bronze.source_record row (payload as a dict)."""
+    language = {
+        "declared_iso639_3": cfg.language_iso639_3,
+        "script_iso15924": cfg.script_iso15924,
+        **detect_language(f"{title} {body_text[:1000]}"),
+    }
+    canonical_url = canonicalize_url(link) or None
+    exact_hash = content_version(title, body_text)
+    normalized_hash = normalized_content_version(title, body_text)
+    stable_doc_id = document_id(cfg.source_id, record_id, canonical_url or "")
+    payload = {
+        "schema_version": PAYLOAD_SCHEMA_VERSION,
+        "source": {
+            "source_id": cfg.source_id,
+            "name": cfg.name,
+            "source_class": cfg.source_class,
+            "feed_url": feed_url,
+        },
+        "feed_entry": {
+            "guid": record_id,
+            "link": link or None,
+            "title": (raw_title if raw_title is not None else title) or None,
+            "summary_html": summary_html or None,
+            "author": author or None,
+            "tags": tags,
+            "published_raw": raw_dates.get("published_raw"),
+            "updated_raw": raw_dates.get("updated_raw"),
+        },
+        "article": {
+            "document_id": stable_doc_id,
+            "document_type": "text_article",
+            "canonical_url": canonical_url,
+            "final_url": fetch_meta.get("final_url"),
+            "title": title or None,
+            "body_text": body_text or None,
+            "body_source": body_source,
+            "char_count": len(body_text or ""),
+            "word_count": len((body_text or "").split()),
+        },
+        "dates": {
+            "published_at_utc": utc_str(published_utc),
+            "fetched_at_utc": utc_str(fetched_at),
+        },
+        "fetch": {
+            "http_status": fetch_meta.get("http_status"),
+            "error": fetch_meta.get("error"),
+            "etag": fetch_meta.get("etag"),
+            "last_modified": fetch_meta.get("last_modified"),
+            "content_sha256": exact_hash,
+            "normalized_content_sha256": normalized_hash,
+            "user_agent": USER_AGENT,
+        },
+        "language": language,
+    }
+    return {
+        "source_id": cfg.source_id,
+        "source_record_id": record_id,
+        "source_version": exact_hash,
+        # Subject-country assignment is intentionally deferred to a later
+        # multi-country tagging agent. Publisher origin is not a sentiment
+        # target and is not substituted here.
+        "country_iso3": None,
+        "object_uri": None,  # raw/object-storage layer not in scope (bronze-only)
+        "payload": payload,
+        "ingested_at": utc_str(fetched_at),
+    }
