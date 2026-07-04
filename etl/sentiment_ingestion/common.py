@@ -351,3 +351,211 @@ def build_bronze_row(cfg: SourceConfig, *, record_id: str, title: str,
         "payload": payload,
         "ingested_at": utc_str(fetched_at),
     }
+
+
+# ── Generic feed-driven fetch loop ────────────────────────────────────────────
+
+def fetch_from_feeds(cfg: SourceConfig, days_back: int, max_articles: int, *,
+                     body_postprocess: Optional[Callable] = None,
+                     known_records: Optional[dict] = None) -> tuple:
+    """
+    Fetch up to max_articles bronze rows for one source. Returns (rows, stats).
+
+    known_records maps (source_id, source_record_id) to its latest feed stamp
+    and HTTP validators; unchanged entries skip the page download.
+
+    Content resolution order:
+      1. feed content:encoded (when cfg.prefer_feed_content)
+      2. article-page scrape via cfg.body_selectors
+
+    RSS summaries are retained as source metadata but are never promoted to
+    article bodies. Records without full text or with fewer than the minimum
+    words are rejected.
+
+    Paginated feeds (cfg.feed_pagination) are read page by page until a page
+    contains an already-ingested entry (caught up), a whole page is older
+    than the cutoff, the feed ends, or cfg.max_feed_pages is reached. Hitting
+    the cap is logged as a possible coverage gap.
+    """
+    session = make_session(cfg.accept_language)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+    max_pages = max(1, cfg.max_feed_pages) if cfg.feed_pagination else 1
+    seen_ids = set()
+    rows = []
+    stats = {"feed_errors": 0, "feed_pages": 0, "entries_seen": 0, "too_old": 0,
+             "skipped_known": 0, "skipped_http_not_modified": 0,
+             "excluded_non_text": 0,
+             "scrape_failures": 0, "rejected_no_full_text": 0,
+             "rejected_short_body": 0, "rows": 0}
+    if cfg.feed_pagination:
+        stats["feed_page_stop"] = None
+
+    for feed_url in cfg.feeds:
+        if len(rows) >= max_articles:
+            break
+        stop = "page_cap"
+        for page in range(1, max_pages + 1):
+            if len(rows) >= max_articles:
+                stop = "max_articles"
+                break
+            page_url = feed_page_url(feed_url, page, cfg.feed_pagination)
+            if page > 1:
+                time.sleep(cfg.article_delay)  # politeness between feed pages
+            log.info("[%s] fetching feed %s", cfg.key, page_url)
+            try:
+                r = session.get(page_url, timeout=DEFAULT_TIMEOUT)
+                if page > 1 and r.status_code == 404:
+                    stop = "end_of_feed"  # WordPress 404s past the last page
+                    break
+                r.raise_for_status()
+            except Exception as exc:
+                log.warning("[%s] feed failed %s — %s", cfg.key, page_url, exc)
+                stats["feed_errors"] += 1
+                stop = "feed_error"
+                break
+
+            feed = feedparser.parse(r.content)
+            if not feed.entries:
+                stop = "end_of_feed"
+                break
+            stats["feed_pages"] += 1
+            page_has_known = False
+            page_has_recent = False
+            page_new_entries = 0  # entries not already seen on earlier pages
+
+            for entry in feed.entries:
+                if len(rows) >= max_articles:
+                    break
+                stats["entries_seen"] += 1
+
+                link = entry.get("link") or ""
+                record_id = entry.get("id") or link
+                if not record_id or record_id in seen_ids:
+                    continue
+                seen_ids.add(record_id)
+                page_new_entries += 1
+
+                published_utc, raw_dates = parse_entry_date(entry)
+                if published_utc is None or published_utc >= cutoff:
+                    page_has_recent = True
+                if known_records is not None and \
+                        (cfg.source_id, record_id) in known_records:
+                    page_has_known = True
+
+                tags = [t.get("term") for t in entry.get("tags", []) if t.get("term")]
+                folded_tags = {tag.casefold() for tag in tags}
+                excluded_tags = {tag.casefold() for tag in cfg.excluded_tags}
+                excluded_by_tag = bool(folded_tags & excluded_tags)
+                excluded_by_url = any(pattern in link for pattern in cfg.excluded_url_patterns)
+                if excluded_by_tag or excluded_by_url:
+                    stats["excluded_non_text"] += 1
+                    continue
+
+                # Known GUID with an unchanged feed stamp → nothing to do, and
+                # no article download. A changed stamp (likely edit) falls
+                # through to a full re-fetch; content-hash dedup still guards it.
+                if known_records is not None:
+                    stored = known_records.get((cfg.source_id, record_id))
+                    stored_stamp = (
+                        stored.get("feed_stamp") if isinstance(stored, dict) else stored
+                    )
+                    if stored_stamp and stored_stamp == feed_stamp(entry):
+                        stats["skipped_known"] += 1
+                        continue
+                else:
+                    stored = None
+
+                if published_utc and published_utc < cutoff:
+                    stats["too_old"] += 1
+                    continue
+
+                # AllAfrica (and some WordPress feeds) HTML-escape titles —
+                # strip_html unescapes entities; the raw string stays in payload.
+                raw_title = entry.get("title") or ""
+                title = strip_html(raw_title).strip()
+                summary_html = entry.get("summary") or ""
+                author = entry.get("author") or None
+
+                # 1) full text from the feed itself (WordPress content:encoded)
+                body_text, body_source = "", None
+                fetch_meta = {"http_status": None, "final_url": None, "error": None,
+                              "etag": None, "last_modified": None}
+                if cfg.prefer_feed_content:
+                    contents = entry.get("content") or []
+                    if contents:
+                        text = strip_html(contents[0].get("value") or "")
+                        if len(text) >= MIN_BODY_CHARS:
+                            body_text, body_source = text, "feed_content_encoded"
+
+                # 2) article-page scrape
+                if not body_text and link:
+                    conditional_headers = {}
+                    if isinstance(stored, dict):
+                        if stored.get("etag"):
+                            conditional_headers["If-None-Match"] = stored["etag"]
+                        if stored.get("last_modified"):
+                            conditional_headers["If-Modified-Since"] = \
+                                stored["last_modified"]
+                    body_text, fetch_meta = scrape_body(
+                        session, link, cfg.body_selectors,
+                        allowed_domains=cfg.allowed_domains,
+                        delay=cfg.article_delay,
+                        exclude_selectors=cfg.body_exclude_selectors,
+                        conditional_headers=conditional_headers,
+                    )
+                    if body_text:
+                        body_source = "page_scrape"
+                    elif fetch_meta.get("error") == "not_modified":
+                        stats["skipped_http_not_modified"] += 1
+                        continue
+                    else:
+                        stats["scrape_failures"] += 1
+
+                if not body_text:
+                    stats["rejected_no_full_text"] += 1
+                    continue
+
+                if body_postprocess and body_text:
+                    body_text = body_postprocess(body_text)
+
+                if (len(body_text) < MIN_BODY_CHARS or
+                        len(body_text.split()) < MIN_BODY_WORDS):
+                    stats["rejected_short_body"] += 1
+                    continue
+
+                rows.append(build_bronze_row(
+                    cfg,
+                    record_id=record_id, title=title, raw_title=raw_title,
+                    summary_html=summary_html,
+                    body_text=body_text, body_source=body_source, link=link,
+                    author=author, tags=tags, published_utc=published_utc,
+                    raw_dates=raw_dates, fetch_meta=fetch_meta, feed_url=feed_url,
+                    fetched_at=datetime.now(timezone.utc),
+                ))
+
+            if not cfg.feed_pagination:
+                break
+            if len(rows) >= max_articles:
+                stop = "max_articles"
+                break
+            if page_has_known and cfg.stop_paging_on_known:
+                stop = "caught_up"
+                break
+            # A page of only repeats (the feed shifted while paging) says
+            # nothing about age, so keep going.
+            if page_new_entries and not page_has_recent:
+                stop = "cutoff"
+                break
+
+        if cfg.feed_pagination:
+            stats["feed_page_stop"] = stop
+            if stop == "page_cap":
+                log.warning(
+                    "[%s] reached the %d-page feed cap before catching up with "
+                    "ingested entries or the --days cutoff — possible coverage gap",
+                    cfg.key, max_pages,
+                )
+
+    stats["rows"] = len(rows)
+    log.info("[%s] collected %d rows %s", cfg.key, len(rows), stats)
+    return rows, stats
