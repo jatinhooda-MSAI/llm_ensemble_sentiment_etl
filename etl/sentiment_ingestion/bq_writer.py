@@ -90,3 +90,64 @@ def known_record_metadata(client, source_ids: list, lookback_days: int) -> dict:
         }
         for r in result
     }
+
+
+def existing_normalized_keys(client, source_ids: list,
+                             lookback_days: int) -> set:
+    """Stable document identity + normalized lexical fingerprint keys."""
+    from google.cloud import bigquery
+
+    query = f"""
+        SELECT DISTINCT
+          source_id,
+          COALESCE(
+            JSON_VALUE(payload, '$.article.document_id'),
+            LOWER(TO_HEX(SHA256(CONCAT(
+              source_id, '\\n',
+              COALESCE(JSON_VALUE(payload, '$.article.canonical_url'),
+                       source_record_id)
+            ))))
+          ) AS document_id,
+          COALESCE(JSON_VALUE(payload, '$.fetch.normalized_content_sha256'),
+                   source_version) AS normalized_version
+        FROM `{bronze_fqtn()}`
+        WHERE ingested_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback DAY)
+          AND source_id IN UNNEST(@source_ids)
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("lookback", "INT64", lookback_days),
+            bigquery.ArrayQueryParameter("source_ids", "STRING", source_ids),
+        ]
+    )
+    result = client.query(query, job_config=job_config).result()
+    return {
+        (r.source_id, r.document_id, r.normalized_version)
+        for r in result
+    }
+
+
+def filter_new(rows: list, existing: set,
+               existing_normalized: set = frozenset()) -> list:
+    """Unchanged articles (same content-hash version) are skipped; edited
+    articles carry a new source_version and insert as a new row (append-only)."""
+    kept = []
+    seen_exact = set(existing)
+    seen_normalized = set(existing_normalized)
+    for row in rows:
+        exact = (row["source_id"], row["source_record_id"], row["source_version"])
+        article = row.get("payload", {}).get("article", {})
+        fetch = row.get("payload", {}).get("fetch", {})
+        normalized = None
+        if article.get("document_id") and fetch.get("normalized_content_sha256"):
+            normalized = (
+                row["source_id"], article["document_id"],
+                fetch["normalized_content_sha256"],
+            )
+        if exact in seen_exact or (normalized and normalized in seen_normalized):
+            continue
+        kept.append(row)
+        seen_exact.add(exact)
+        if normalized:
+            seen_normalized.add(normalized)
+    return kept
