@@ -151,3 +151,31 @@ def filter_new(rows: list, existing: set,
         if normalized:
             seen_normalized.add(normalized)
     return kept
+
+
+def write_rows(client, rows: list):
+    """Batch-load rows via a load job (not streaming inserts)."""
+    if not rows:
+        return None
+    from google.cloud import bigquery
+
+    table = client.get_table(bronze_fqtn())  # raises if the table is missing
+    job_config = bigquery.LoadJobConfig(
+        schema=table.schema,
+        write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+    )
+    try:
+        # JSON column takes the payload object in place in the NDJSON load.
+        job = client.load_table_from_json(rows, table, job_config=job_config)
+        job.result()
+    except Exception as exc:
+        # Some client/backend combinations only accept JSON columns as
+        # JSON-formatted strings — retry once in that shape.
+        log.warning("JSON-object load failed (%s); retrying payload as string", exc)
+        string_rows = [
+            {**r, "payload": json.dumps(r["payload"], ensure_ascii=False)}
+            for r in rows
+        ]
+        job = client.load_table_from_json(string_rows, table, job_config=job_config)
+        job.result()
+    return job
