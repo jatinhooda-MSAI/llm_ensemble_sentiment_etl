@@ -1,0 +1,37 @@
+# Sentiment ingestion source registry (bronze layer).
+#
+# Each entry configures one fetcher in etl/sentiment_ingestion/fetchers/.
+# source_id values are governed identifiers (^SRC_[A-Z0-9_]+$) per an
+# existing data dictionary; they must be registered in
+# gold.dim_source by the schema owner before production use.
+#
+# Country assignment is intentionally absent. A later multi-country tagging
+# agent owns subject-country classification and evidence.
+
+bbc_swahili:
+  source_id: SRC_BBC_SWAHILI
+  name: BBC Swahili
+  source_class: news_rss
+  feeds:
+    - https://feeds.bbci.co.uk/swahili/rss.xml
+  language_iso639_3: swa
+  script_iso15924: Latn
+  accept_language: "sw,en;q=0.8"
+  allowed_domains: [bbc.com, bbc.co.uk]
+  # BBC 2026 article DOM uses hashed css-module classes with no <article> tag;
+  # body paragraphs sit under <main>. text-block still appears on live-format
+  # pages, so it stays first.
+  body_selectors:
+    - "[data-component='text-block'] p"
+    - "main p"
+    - ".story-body__inner p"
+    - "article p"
+  # Remove BBC recommendation/podcast modules and image credits before
+  # collecting main paragraphs. Article prose remains outside these nodes.
+  body_exclude_selectors:
+    - "main section[role='region']"
+    - "main figure"
+  excluded_url_patterns:
+    - "/bbc_swahili_radio/"
+  article_delay: 0.8
+  prefer_feed_content: false
