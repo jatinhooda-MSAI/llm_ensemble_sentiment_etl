@@ -35,3 +35,25 @@ bbc_swahili:
     - "/bbc_swahili_radio/"
   article_delay: 0.8
   prefer_feed_content: false
+
+bbc_arabic:
+  source_id: SRC_BBC_ARABIC
+  name: BBC Arabic
+  source_class: news_rss
+  feeds:
+    - https://feeds.bbci.co.uk/arabic/rss.xml
+  language_iso639_3: ara
+  script_iso15924: Arab
+  accept_language: "ar,en;q=0.6"
+  allowed_domains: [bbc.com, bbc.co.uk]
+  # same DOM notes as bbc_swahili
+  body_selectors:
+    - "[data-component='text-block'] p"
+    - "main p"
+    - ".story-body__inner p"
+    - "article p"
+  body_exclude_selectors:
+    - "main section[role='region']"
+    - "main figure"
+  article_delay: 0.8
+  prefer_feed_content: false
