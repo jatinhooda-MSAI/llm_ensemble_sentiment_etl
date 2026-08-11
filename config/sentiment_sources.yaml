@@ -57,3 +57,29 @@ bbc_arabic:
     - "main figure"
   article_delay: 0.8
   prefer_feed_content: false
+
+hespress:
+  source_id: SRC_HESPRESS
+  name: Hespress
+  source_class: news_rss
+  feeds:
+    - https://www.hespress.com/feed
+  language_iso639_3: ara
+  script_iso15924: Arab
+  accept_language: "ar,fr;q=0.8,en;q=0.6"
+  allowed_domains: [hespress.com]
+  body_selectors:
+    - ".article-content p"
+    - ".entry-content p"
+    - ".post-content p"
+    - "article p"
+  excluded_tags:
+    - "صوت وصورة"
+    - "كاريكاتير اليوم"
+  article_delay: 1.0
+  prefer_feed_content: true
+  # The feed lists only the newest 12 posts (~2.3h of output at ~95/day), so
+  # a single page per 6h run kept about half. Page through ?paged=N until a
+  # page holds an already-ingested post; 10 pages ≈ 30h absorbs missed runs.
+  feed_pagination: wordpress
+  max_feed_pages: 10
