@@ -83,3 +83,21 @@ hespress:
   # page holds an already-ingested post; 10 pages ≈ 30h absorbs missed runs.
   feed_pagination: wordpress
   max_feed_pages: 10
+
+allafrica_fr:
+  source_id: SRC_ALLAFRICA_FR
+  name: AllAfrica French
+  source_class: news_rss
+  feeds:
+    - https://fr.allafrica.com/tools/headlines/rdf/latest/headlines.rdf
+  language_iso639_3: fra
+  script_iso15924: Latn
+  accept_language: "fr,en;q=0.8"
+  allowed_domains: [allafrica.com]
+  body_selectors:
+    - ".story-body p"
+    - "#story-body p"
+    - "div[itemprop='articleBody'] p"
+    - "article p"
+  article_delay: 1.5
+  prefer_feed_content: false
