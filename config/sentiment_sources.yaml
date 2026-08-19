@@ -101,3 +101,21 @@ allafrica_fr:
     - "article p"
   article_delay: 1.5
   prefer_feed_content: false
+
+africanews_fr:
+  source_id: SRC_AFRICANEWS_FR
+  name: Africanews French
+  source_class: news_rss
+  feeds:
+    - https://fr.africanews.com/feed/rss
+  language_iso639_3: fra
+  script_iso15924: Latn
+  accept_language: "fr,en;q=0.8"
+  allowed_domains: [africanews.com]
+  # verified live 2026-08-19: body paragraphs sit in .article-content__text
+  body_selectors:
+    - ".article-content__text p"
+    - "div.article-content p"
+    - "article p"
+  article_delay: 1.0
+  prefer_feed_content: false
