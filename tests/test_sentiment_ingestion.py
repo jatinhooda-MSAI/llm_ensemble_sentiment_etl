@@ -94,3 +94,102 @@ class TestHashingAndUrls:
         url = "https://example.com/a?utm_source=rss"
         assert document_id("SRC_X", "guid-v1", url) == \
             document_id("SRC_X", "guid-v2", "https://example.com/a")
+
+
+# ── config + bronze row shape ─────────────────────────────────────────────────
+
+class TestConfigAndRowShape:
+    def test_only_full_text_sources_configured(self):
+        sources = load_sources()
+        assert set(sources) == {
+            "bbc_swahili", "bbc_arabic", "hespress",
+            "allafrica_fr", "africanews_fr",
+        }
+        for cfg in sources.values():
+            assert SOURCE_ID_RE.fullmatch(cfg.source_id), cfg.source_id
+            assert cfg.language_iso639_3 in {"swa", "ara", "fra"}
+            assert cfg.script_iso15924 in {"Latn", "Arab"}
+            assert cfg.feeds
+
+    def test_build_bronze_row_shape(self):
+        cfg = load_sources()["hespress"]
+        fetched = datetime(2026, 8, 19, 10, 0, 0, tzinfo=timezone.utc)
+        row = build_bronze_row(
+            cfg,
+            record_id="https://www.hespress.com/example-123.html",
+            title="عنوان تجريبي",
+            summary_html="<p>ملخص</p>",
+            body_text="نص المقال الكامل هنا " * 10,
+            body_source="feed_content_encoded",
+            link="https://www.hespress.com/example-123.html?utm_source=feed",
+            author="هسبريس",
+            tags=["اقتصاد"],
+            published_utc=datetime(2026, 8, 19, 7, 0, 10, tzinfo=timezone.utc),
+            raw_dates={"published_raw": "Wed, 19 Aug 2026 07:00:10 +0100",
+                       "updated_raw": None},
+            fetch_meta={"http_status": None, "final_url": None, "error": None},
+            feed_url="https://www.hespress.com/feed",
+            fetched_at=fetched,
+        )
+        # exactly the live bronze.source_record columns
+        assert set(row) == {"source_id", "source_record_id", "source_version",
+                            "country_iso3", "object_uri", "payload", "ingested_at"}
+        assert row["source_id"] == "SRC_HESPRESS"
+        assert row["country_iso3"] is None
+        assert row["object_uri"] is None
+        assert row["ingested_at"] == "2026-08-19T10:00:00Z"
+        assert re.fullmatch(r"[0-9a-f]{64}", row["source_version"])
+
+        payload = row["payload"]
+        assert set(payload) == {"schema_version", "source", "feed_entry",
+                                "article", "dates", "fetch", "language"}
+        assert payload["fetch"]["content_sha256"] == row["source_version"]
+        assert re.fullmatch(r"[0-9a-f]{64}", payload["article"]["document_id"])
+        assert re.fullmatch(
+            r"[0-9a-f]{64}", payload["fetch"]["normalized_content_sha256"]
+        )
+        # tracking param stripped from the canonical URL
+        assert payload["article"]["canonical_url"] == \
+            "https://www.hespress.com/example-123.html"
+        assert payload["language"]["declared_iso639_3"] == "ara"
+        assert payload["dates"]["published_at_utc"] == "2026-08-19T07:00:10Z"
+        assert payload["feed_entry"]["published_raw"].endswith("+0100")
+
+    def test_non_text_filters_are_configured(self):
+        sources = load_sources()
+        assert "/bbc_swahili_radio/" in \
+            sources["bbc_swahili"].excluded_url_patterns
+        assert {"صوت وصورة", "كاريكاتير اليوم"} <= \
+            set(sources["hespress"].excluded_tags)
+
+    def test_only_hespress_feed_is_paginated(self):
+        sources = load_sources()
+        assert sources["hespress"].feed_pagination == "wordpress"
+        assert sources["hespress"].max_feed_pages == 10
+        for key, cfg in sources.items():
+            if key != "hespress":
+                assert cfg.feed_pagination is None, key
+
+
+class TestHespressCleanup:
+    def test_wordpress_footer_removed(self):
+        text = (
+            "نص المقال المفيد هنا. "
+            "The post عنوان المقال appeared first on Hespress - "
+            "هسبريس جريدة إلكترونية مغربية ."
+        )
+        assert _strip_read_also(text) == "نص المقال المفيد هنا."
+
+
+# ── feed_stamp (pre-fetch skip key) ───────────────────────────────────────────
+
+class TestFeedStamp:
+    def test_prefers_updated_over_published(self):
+        assert feed_stamp({"updated": "U", "published": "P"}) == "U"
+
+    def test_falls_back_to_published(self):
+        assert feed_stamp({"published": "P"}) == "P"
+
+    def test_undated_entry_is_empty_and_never_matches(self):
+        # empty stamps must not be used to skip — engine requires truthy match
+        assert feed_stamp({}) == ""
