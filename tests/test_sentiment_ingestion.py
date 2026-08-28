@@ -193,3 +193,143 @@ class TestFeedStamp:
     def test_undated_entry_is_empty_and_never_matches(self):
         # empty stamps must not be used to skip — engine requires truthy match
         assert feed_stamp({}) == ""
+
+
+# ── feed paging (fetch_from_feeds with a fake HTTP session) ───────────────────
+
+FEED = "https://example.com/feed"
+_BODY = "كلمة " * 120  # comfortably above MIN_BODY_WORDS / MIN_BODY_CHARS
+
+
+def _rss(items):
+    """Minimal WordPress-style RSS page; items are (guid, published) pairs."""
+    parts = [
+        f"<item><title>T {guid}</title><link>{guid}</link><guid>{guid}</guid>"
+        f"<pubDate>{format_datetime(published)}</pubDate>"
+        f"<content:encoded><![CDATA[<p>{_BODY}</p>]]></content:encoded></item>"
+        for guid, published in items
+    ]
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">'
+        f"<channel><title>t</title>{''.join(parts)}</channel></rss>"
+    ).encode("utf-8")
+
+
+def _page_items(page, n=3, age=timedelta(hours=1)):
+    when = (datetime.now(timezone.utc) - age).replace(microsecond=0)
+    return [(f"https://example.com/p{page}-{i}", when) for i in range(n)]
+
+
+class _FakeResponse:
+    def __init__(self, status_code, content=b""):
+        self.status_code = status_code
+        self.content = content
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class _FakeSession:
+    """Serves canned feed pages keyed by URL; any other URL is a 404."""
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.requested = []
+
+    def get(self, url, timeout=None, headers=None):
+        self.requested.append(url)
+        if url in self.pages:
+            return _FakeResponse(200, self.pages[url])
+        return _FakeResponse(404)
+
+
+def _paged_cfg(**overrides):
+    fields = dict(
+        key="wp", source_id="SRC_TEST_WP", name="Test WP", source_class="news_rss",
+        feeds=[FEED], language_iso639_3="ara", script_iso15924="Arab",
+        prefer_feed_content=True, article_delay=0,
+        feed_pagination="wordpress", max_feed_pages=5,
+    )
+    fields.update(overrides)
+    return SourceConfig(**fields)
+
+
+def _known(guid, published):
+    return {("SRC_TEST_WP", guid): {"feed_stamp": format_datetime(published)}}
+
+
+class TestFeedPaging:
+    def _run(self, monkeypatch, pages, cfg, known=None):
+        session = _FakeSession(pages)
+        monkeypatch.setattr(common, "make_session", lambda *_: session)
+        rows, stats = fetch_from_feeds(cfg, 2, 1000, known_records=known)
+        return session, rows, stats
+
+    def test_page_urls(self):
+        assert feed_page_url(FEED, 1, "wordpress") == FEED
+        assert feed_page_url(FEED, 3, "wordpress") == FEED + "?paged=3"
+        assert feed_page_url(FEED + "?lang=ar&paged=2", 4, "wordpress") == \
+            FEED + "?lang=ar&paged=4"
+        assert feed_page_url(FEED, 3, None) == FEED
+
+    def test_unpaginated_feed_reads_one_page(self, monkeypatch):
+        pages = {FEED: _rss(_page_items(1)),
+                 FEED + "?paged=2": _rss(_page_items(2))}
+        session, rows, stats = self._run(
+            monkeypatch, pages, _paged_cfg(feed_pagination=None))
+        assert session.requested == [FEED]
+        assert len(rows) == 3
+        assert "feed_page_stop" not in stats
+
+    def test_stops_after_page_with_known_entry(self, monkeypatch):
+        p2 = _page_items(2)
+        pages = {FEED: _rss(_page_items(1)), FEED + "?paged=2": _rss(p2),
+                 FEED + "?paged=3": _rss(_page_items(3))}
+        session, rows, stats = self._run(
+            monkeypatch, pages, _paged_cfg(), known=_known(*p2[1]))
+        assert session.requested == [FEED, FEED + "?paged=2"]
+        assert stats["feed_page_stop"] == "caught_up"
+        assert stats["skipped_known"] == 1
+        assert len(rows) == 5  # 3 from page 1, 2 new from page 2
+
+    def test_backfill_pages_past_known_until_cutoff(self, monkeypatch):
+        p1 = _page_items(1)
+        pages = {FEED: _rss(p1), FEED + "?paged=2": _rss(_page_items(2)),
+                 FEED + "?paged=3": _rss(_page_items(3, age=timedelta(days=10))),
+                 FEED + "?paged=4": _rss(_page_items(4, age=timedelta(days=11)))}
+        session, rows, stats = self._run(
+            monkeypatch, pages, _paged_cfg(stop_paging_on_known=False),
+            known=_known(*p1[0]))
+        assert session.requested == [FEED, FEED + "?paged=2", FEED + "?paged=3"]
+        assert stats["feed_page_stop"] == "cutoff"
+        assert stats["skipped_known"] == 1  # known entries are still skipped
+        assert stats["too_old"] == 3
+        assert len(rows) == 5
+
+    def test_page_cap_is_flagged(self, monkeypatch):
+        pages = {FEED: _rss(_page_items(1)), FEED + "?paged=2": _rss(_page_items(2)),
+                 FEED + "?paged=3": _rss(_page_items(3))}
+        session, rows, stats = self._run(
+            monkeypatch, pages, _paged_cfg(max_feed_pages=2), known={})
+        assert len(session.requested) == 2
+        assert stats["feed_pages"] == 2
+        assert stats["feed_page_stop"] == "page_cap"
+
+    def test_404_past_last_page_ends_cleanly(self, monkeypatch):
+        pages = {FEED: _rss(_page_items(1))}
+        session, rows, stats = self._run(monkeypatch, pages, _paged_cfg(), known={})
+        assert session.requested == [FEED, FEED + "?paged=2"]
+        assert stats["feed_page_stop"] == "end_of_feed"
+        assert stats["feed_errors"] == 0
+        assert len(rows) == 3
+
+    def test_page_of_repeats_does_not_stop_as_cutoff(self, monkeypatch):
+        p1 = _page_items(1)
+        pages = {FEED: _rss(p1), FEED + "?paged=2": _rss(p1),
+                 FEED + "?paged=3": _rss(_page_items(3))}
+        session, rows, stats = self._run(
+            monkeypatch, pages, _paged_cfg(max_feed_pages=3), known={})
+        assert len(session.requested) == 3
+        assert len(rows) == 6
