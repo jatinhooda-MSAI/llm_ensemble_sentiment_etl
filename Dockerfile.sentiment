@@ -1,0 +1,20 @@
+# Sentiment ingestion job (bronze layer) — Cloud Run Job image.
+# Runs as the pipeline's service account; writes bronze.source_record.
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.sentiment.txt .
+RUN pip install --no-cache-dir -r requirements.sentiment.txt
+
+# The module is self-contained: only these paths are needed.
+COPY run_sentiment_ingestion.py .
+COPY etl/__init__.py etl/__init__.py
+COPY etl/sentiment_ingestion/ etl/sentiment_ingestion/
+COPY config/sentiment_sources.yaml config/sentiment_sources.yaml
+
+ENV PYTHONUNBUFFERED=1
+
+ENTRYPOINT ["python", "run_sentiment_ingestion.py"]
+# Default schedule-friendly args; override per execution if needed.
+CMD ["--sources", "all", "--days", "2", "--max", "200"]
