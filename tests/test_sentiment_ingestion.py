@@ -333,3 +333,41 @@ class TestFeedPaging:
             monkeypatch, pages, _paged_cfg(max_feed_pages=3), known={})
         assert len(session.requested) == 3
         assert len(rows) == 6
+
+
+# ── bq_writer.filter_new ──────────────────────────────────────────────────────
+
+class TestFilterNew:
+    def test_bigquery_struct_supports_dict_and_row_shapes(self):
+        class RowLike:
+            feed_stamp = "P"
+
+        assert _struct_field({"feed_stamp": "D"}, "feed_stamp") == "D"
+        assert _struct_field(RowLike(), "feed_stamp") == "P"
+        assert _struct_field({}, "missing") is None
+
+    def test_duplicates_filtered_and_new_versions_kept(self):
+        rows = [
+            {"source_id": "SRC_X", "source_record_id": "r1", "source_version": "v1"},
+            {"source_id": "SRC_X", "source_record_id": "r1", "source_version": "v2"},
+            {"source_id": "SRC_X", "source_record_id": "r2", "source_version": "v1"},
+        ]
+        existing = {("SRC_X", "r1", "v1")}
+        kept = filter_new(rows, existing)
+        assert [(r["source_record_id"], r["source_version"]) for r in kept] == \
+            [("r1", "v2"), ("r2", "v1")]
+
+    def test_normalized_duplicate_with_rotating_guid_is_filtered(self):
+        row = {
+            "source_id": "SRC_X",
+            "source_record_id": "new-guid",
+            "source_version": "exact-v2",
+            "payload": {
+                "article": {"document_id": "doc-1"},
+                "fetch": {"normalized_content_sha256": "normalized-v1"},
+            },
+        }
+        kept = filter_new(
+            [row], set(), {("SRC_X", "doc-1", "normalized-v1")}
+        )
+        assert kept == []
