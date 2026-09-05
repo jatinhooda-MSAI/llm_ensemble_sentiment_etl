@@ -87,6 +87,35 @@ ORDER BY ingested_at DESC
 LIMIT 20;
 ```
 
+## Production deployment (Cloud Run Job, project your-gcp-project)
+
+- **Image repository**: `us-central1-docker.pkg.dev/your-gcp-project/your-artifact-repo/sentiment-ingestion`.
+  Each build uses the immutable Cloud Build ID as its tag; `latest` is not used
+  because the Artifact Registry repository enforces tag immutability.
+  built from `Dockerfile.sentiment` (slim: only this module + `requirements.sentiment.txt`)
+  via `gcloud builds submit --project=your-gcp-project --config=cloudbuild.sentiment.yaml .`
+- **Job**: `sentiment-ingestion` in `us-central1`, running **as
+  `your-service-account@your-gcp-project.iam.gserviceaccount.com`** with
+  `BQ_PROJECT=your-gcp-project`, args `--sources all --days 2 --max 200`.
+- **Schedule**: Cloud Scheduler `sentiment-ingestion-6h`, cron
+  `0 */6 * * *` (every 6 hours, UTC), authenticating as the service account
+  (it holds `roles/run.invoker`).
+
+Operations:
+
+```bash
+# run now
+gcloud run jobs execute sentiment-ingestion --region=us-central1 --project=your-gcp-project
+
+# logs of the latest execution
+gcloud logging read 'resource.type="cloud_run_job" resource.labels.job_name="sentiment-ingestion"' --project=your-gcp-project --limit=50
+
+# ship a code change: rebuild, then update the job to the returned build-ID tag
+gcloud builds submit --project=your-gcp-project --config=cloudbuild.sentiment.yaml .
+gcloud run jobs update sentiment-ingestion --region=us-central1 --project=your-gcp-project \
+  --image=us-central1-docker.pkg.dev/your-gcp-project/your-artifact-repo/sentiment-ingestion:<BUILD_ID>
+```
+
 ## Dependencies
 
 `requirements.sentiment.txt`: `feedparser`, `requests`, `beautifulsoup4`,
