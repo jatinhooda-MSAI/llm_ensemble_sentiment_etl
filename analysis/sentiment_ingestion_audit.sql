@@ -74,3 +74,58 @@ SELECT
 FROM latest_articles
 GROUP BY ingest_date, source_id
 ORDER BY ingest_date DESC, source_id;
+
+-- 3. Physical duplicate and version audit across all retained bronze rows.
+WITH all_rows AS (
+  SELECT source_id, source_record_id, source_version, ingested_at
+  FROM `your-gcp-project.bronze.source_record`
+  WHERE source_id IN (
+    'SRC_BBC_SWAHILI', 'SRC_BBC_ARABIC', 'SRC_HESPRESS',
+    'SRC_ALLAFRICA_FR', 'SRC_AFRICANEWS_FR', 'SRC_FINANCIAL_AFRIK'
+  )
+  AND ingested_at >= audit_start
+),
+source_totals AS (
+  SELECT
+    source_id,
+    COUNT(*) AS physical_rows,
+    COUNT(DISTINCT source_record_id) AS distinct_articles,
+    COUNT(DISTINCT FORMAT('%s|%s|%s', source_id, source_record_id, source_version)) AS distinct_versions,
+    COUNT(*) - COUNT(DISTINCT FORMAT('%s|%s|%s', source_id, source_record_id, source_version)) AS exact_duplicate_rows
+  FROM all_rows
+  GROUP BY source_id
+),
+article_versions AS (
+  SELECT source_id, source_record_id, COUNT(DISTINCT source_version) AS version_count
+  FROM all_rows
+  GROUP BY source_id, source_record_id
+)
+SELECT
+  t.source_id,
+  t.physical_rows,
+  t.distinct_articles,
+  t.distinct_versions,
+  t.exact_duplicate_rows,
+  COUNTIF(v.version_count > 1) AS articles_with_revisions,
+  MAX(v.version_count) AS max_versions_for_one_article
+FROM source_totals t
+JOIN article_versions v USING (source_id)
+GROUP BY t.source_id, t.physical_rows, t.distinct_articles, t.distinct_versions, t.exact_duplicate_rows
+ORDER BY t.source_id;
+
+-- 4. Date anomalies. published_at may be NULL, but future dates or published-after-ingested
+-- timestamps indicate parser/source problems.
+SELECT
+  source_id, source_record_id, title, published_at_raw, ingested_at,
+  CASE
+    WHEN published_at_raw IS NOT NULL AND published_at IS NULL THEN 'UNPARSEABLE_DATE'
+    WHEN published_at > TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 1 DAY) THEN 'FUTURE_DATE'
+    WHEN published_at > TIMESTAMP_ADD(ingested_at, INTERVAL 1 DAY) THEN 'PUBLISHED_AFTER_INGEST'
+    WHEN published_at < TIMESTAMP_SUB(ingested_at, INTERVAL 10 DAY) THEN 'STALE_AT_INGEST'
+  END AS anomaly
+FROM latest_articles
+WHERE (published_at_raw IS NOT NULL AND published_at IS NULL)
+   OR published_at > TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
+   OR published_at > TIMESTAMP_ADD(ingested_at, INTERVAL 1 DAY)
+   OR published_at < TIMESTAMP_SUB(ingested_at, INTERVAL 10 DAY)
+ORDER BY ingested_at DESC;
