@@ -129,3 +129,53 @@ WHERE (published_at_raw IS NOT NULL AND published_at IS NULL)
    OR published_at > TIMESTAMP_ADD(ingested_at, INTERVAL 1 DAY)
    OR published_at < TIMESTAMP_SUB(ingested_at, INTERVAL 10 DAY)
 ORDER BY ingested_at DESC;
+
+-- 5. Suspected text extraction failures/boilerplate. Review every returned row.
+SELECT
+  source_id, source_record_id, title, canonical_url, body_source, word_count,
+  fetch_error, LEFT(body_text, 500) AS body_preview
+FROM latest_articles
+WHERE body_text IS NULL
+   OR word_count < 100
+   OR body_source = 'feed_summary'
+   OR fetch_error IS NOT NULL
+   OR REGEXP_CONTAINS(LOWER(body_text), r'(cookie policy|privacy policy|javascript|abonnez-vous|connectez-vous|tous droits réservés)')
+ORDER BY source_id, word_count;
+
+-- 6. Language exceptions. Short texts can confuse detection, so review rather than
+-- automatically reject mismatches.
+SELECT
+  source_id, source_record_id, title, canonical_url, word_count,
+  declared_language, detected_language, language_confidence,
+  LEFT(body_text, 500) AS body_preview
+FROM latest_articles
+WHERE declared_language != detected_language
+   OR language_confidence < 0.80
+   OR detected_language IS NULL
+ORDER BY language_confidence, source_id;
+
+-- 7. Country-assignment distribution. Hespress should be MAR/source_default;
+-- other sources may legitimately have NULL because they are regional/global.
+SELECT
+  source_id,
+  COALESCE(country_iso3, 'NULL') AS country_iso3,
+  country_method,
+  COUNT(*) AS articles
+FROM latest_articles
+GROUP BY source_id, country_iso3, country_method
+ORDER BY source_id, articles DESC;
+
+-- 8. Human-review sample: 10 deterministic articles per source, deliberately mixed
+-- across assigned/unassigned country and body-source strata. A reviewer should compare
+-- title, body, language, country and canonical URL against the publisher page.
+SELECT
+  source_id, source_record_id, title, canonical_url, published_at,
+  body_source, word_count, declared_language, detected_language,
+  language_confidence, country_iso3, country_method,
+  LEFT(body_text, 1000) AS body_preview
+FROM latest_articles
+QUALIFY ROW_NUMBER() OVER (
+  PARTITION BY source_id
+  ORDER BY FARM_FINGERPRINT(CONCAT(source_record_id, COALESCE(country_iso3, 'NULL'), body_source))
+) <= 10
+ORDER BY source_id, source_record_id;
