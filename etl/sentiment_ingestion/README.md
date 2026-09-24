@@ -152,3 +152,36 @@ gcloud run jobs update sentiment-ingestion --region=us-central1 --project=your-g
   (HTTP status, validators and both content hashes), and declared + detected
   language (ISO 639-3 + ISO 15924). Detection is a validation signal; it does
   not replace the source-declared language.
+
+## Current article and revision handling
+
+Use `bronze.current_text_article` as the handoff to country tagging and
+sentiment. The view partitions by `(source_id, document_id)` and selects the
+newest valid full-text revision. It also forces `country_iso3` to NULL. Create
+or refresh it with `analysis/create_current_text_article_view.sql`.
+
+The country-tagging agent should write a separate, one-to-many silver result;
+it must not update bronze or force one country onto a document. The recommended
+record key is `(document_id, source_version, country_iso3, model_version)`, with
+`role` (`PRIMARY_SUBJECT`, `AFFECTED`, `ACTOR`, or `MENTIONED`), confidence,
+evidence spans, model version and tagging timestamp. Sentiment should target
+only the country roles its model contract accepts, normally `PRIMARY_SUBJECT`
+and `AFFECTED`.
+
+Valid older revisions remain in `bronze.source_record` because the data
+dictionary explicitly requires immutable raw/vintage history and an
+append-only bronze table. They are not separate articles and are not sent to
+sentiment by the current view. This permits exact reproduction of an earlier
+model result and analysis of publisher corrections. Invalid records such as
+teasers, radio-program pages, video/cartoon entries and summary-only bodies are
+deleted with `analysis/cleanup_sentiment_bronze.sql`.
+
+## Open items for the schema owner
+
+1. Register the five `SRC_*` source_ids in `gold.dim_source`
+   (incl. `rights_status` — AllAfrica aggregates member-paper content and
+   needs a rights call before production-scale scraping).
+2. Confirm `object_uri` semantics for bronze rows with no object-storage copy
+   (currently NULL).
+3. Adopt `audit.etl_run` writes if wanted — the runner already logs the
+   per-source summary (fetched / new / skipped-duplicate / errors) it would need.
