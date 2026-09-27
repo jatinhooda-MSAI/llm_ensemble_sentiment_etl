@@ -193,3 +193,51 @@ def insert_label(labeler: dict, doc_id: str, source_version: str, country: str,
     if errors:
         raise RuntimeError(f"BigQuery insert failed: {errors}")
     return {"label_id": row["label_id"], "labeled_at": row["created_at"], "is_revision": bool(previous)}
+
+
+# ── history ──────────────────────────────────────────────────────────────────
+
+def my_labels(labeler: dict, order_desc: bool, limit: int) -> list[dict]:
+    direction = "DESC" if order_desc else "ASC"
+    rows = _query(f"""
+        SELECT cur.doc_id, cur.source_version, cur.country_iso3, cur.is_about_country,
+               cur.sentiment_label, cur.is_skip, cur.created_at,
+               d.title, c.country_territory AS country_name
+        FROM (
+          SELECT * FROM `{config.labels_table}`
+          WHERE labeler_type = 'HUMAN' AND labeler_id = @labeler_id
+          QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY doc_id, source_version, country_iso3 ORDER BY created_at DESC, label_id DESC) = 1
+        ) AS cur
+        LEFT JOIN `{config.document_view}` AS d USING (doc_id, source_version)
+        LEFT JOIN `{config.countries_table}` AS c ON c.iso3 = cur.country_iso3 AND c.is_current
+        ORDER BY cur.created_at {direction}
+        LIMIT @page_limit
+    """, [_p("labeler_id", labeler["labeler_id"]), _p("page_limit", limit, "INT64")])
+    for r in rows:
+        r["labeled_at"] = r.pop("created_at").isoformat() if r.get("created_at") else None
+    return rows
+
+
+def get_item(labeler: dict, doc_id: str, source_version: str, country: str) -> dict | None:
+    rows = _query(f"""
+        SELECT d.doc_id, d.source_version, @country AS country_iso3,
+               c.country_territory AS country_name, d.title, d.body_text AS body,
+               d.language_iso639_3 AS language
+        FROM `{config.document_view}` AS d
+        LEFT JOIN `{config.countries_table}` AS c ON c.iso3 = @country AND c.is_current
+        WHERE d.doc_id = @doc_id AND d.source_version = @version
+        LIMIT 1
+    """, [_p("doc_id", doc_id), _p("version", source_version), _p("country", country)])
+    if not rows:
+        return None
+    current = _my_latest(labeler["labeler_id"], doc_id, source_version, country)
+    return {
+        "item": rows[0],
+        "current": None if not current else {
+            "is_about_country": current["is_about_country"],
+            "sentiment": current["sentiment_label"],
+            "is_skip": current["is_skip"],
+            "labeled_at": current["created_at"].isoformat() if current["created_at"] else None,
+        },
+    }
