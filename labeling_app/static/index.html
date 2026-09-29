@@ -1,0 +1,706 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentiment Labeler</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --text: #1c2733;
+    --muted: #66788c;
+    --border: #dde3ea;
+    --accent: #2563eb;
+    --positive: #16a34a;
+    --negative: #dc2626;
+    --neutral: #64748b;
+    --mixed: #b45309;
+    --uncertain: #7c3aed;
+    --shadow: 0 1px 3px rgba(16, 42, 67, .12);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.55;
+  }
+
+  header {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; gap: 12px;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 16px;
+  }
+  #burger {
+    background: none; border: none; font-size: 22px; cursor: pointer;
+    color: var(--text); padding: 4px 8px; border-radius: 8px;
+  }
+  #burger:hover { background: var(--bg); }
+  #who { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge {
+    background: var(--accent); color: #fff; border-radius: 999px;
+    font-size: 12px; font-weight: 600; padding: 3px 10px; white-space: nowrap;
+  }
+
+  main { max-width: 720px; margin: 0 auto; padding: 20px 16px 40px; }
+  section[hidden] { display: none; }
+
+  /* code entry */
+  #screen-code { text-align: center; padding-top: 8vh; }
+  #screen-code h1 { font-size: 26px; margin-bottom: 4px; }
+  #screen-code p { color: var(--muted); margin-top: 0; }
+  #code-form { display: flex; gap: 8px; justify-content: center; margin-top: 24px; flex-wrap: wrap; }
+  #code-input {
+    font-size: 17px; padding: 12px 14px; border: 1px solid var(--border);
+    border-radius: 10px; width: min(260px, 70vw); text-align: center;
+  }
+  #code-input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  #code-submit {
+    font-size: 16px; font-weight: 600; padding: 12px 22px; border: none;
+    border-radius: 10px; background: var(--accent); color: #fff; cursor: pointer;
+  }
+  #code-submit:disabled { opacity: .6; }
+  .msg { color: var(--negative); font-weight: 500; }
+
+  /* article */
+  .review-note {
+    background: #eef4ff; border: 1px solid #c7dbff; color: #1d4ed8;
+    border-radius: 10px; padding: 10px 14px; font-size: 14px;
+  }
+  #article-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: var(--shadow); padding: 20px 22px; margin-top: 12px;
+  }
+  #article-title { margin: 0 0 12px; font-size: 21px; line-height: 1.35; }
+  #article-body {
+    white-space: pre-wrap; overflow-wrap: break-word;
+    max-height: 52vh; overflow-y: auto; color: #2a3644; font-size: 16px;
+  }
+  .buttons { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+  .sent {
+    flex: 1 1 120px; min-height: 50px; font-size: 16px; font-weight: 700;
+    border-radius: 12px; border: 2px solid transparent; cursor: pointer; color: #fff;
+  }
+  .sent:disabled { opacity: .55; cursor: default; }
+  .sent.positive { background: var(--positive); }
+  .sent.neutral  { background: var(--neutral); }
+  .sent.negative { background: var(--negative); }
+  .sent.mixed    { background: var(--mixed); }
+  .sent.uncertain { background: var(--uncertain); }
+  .sent.yes { background: var(--accent); }
+  .sent.no  { background: var(--neutral); }
+  .question { margin: 18px 0 4px; font-size: 17px; font-weight: 700; }
+  .question-help { margin: 0; color: var(--muted); font-size: 13px; }
+  .sent.selected { border-color: var(--text); box-shadow: 0 0 0 3px rgba(28,39,51,.18); }
+  #current-note { color: var(--muted); font-size: 14px; margin-top: 12px; }
+  #back-to-labeling {
+    margin-top: 16px; background: none; border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 16px; font-size: 15px; cursor: pointer; color: var(--text);
+  }
+
+  /* language filter */
+  #lang-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
+  #lang-bar .lang-label { font-size: 13px; color: var(--muted); font-weight: 600; }
+  .lang-chip {
+    border: 1px solid var(--border); background: var(--card); color: var(--muted);
+    border-radius: 999px; font-size: 13px; font-weight: 600; padding: 6px 14px; cursor: pointer;
+  }
+  .lang-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  #skip-btn {
+    display: block; margin: 14px auto 0; background: none; border: none;
+    color: var(--muted); font-size: 14px; cursor: pointer; text-decoration: underline; padding: 8px;
+  }
+  #article-lang {
+    display: inline-block; background: var(--bg); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 999px; font-size: 12px; font-weight: 600; padding: 2px 10px; margin-bottom: 8px;
+  }
+  .chip.skipped { background: transparent; border: 1px solid var(--muted); color: var(--muted); }
+
+  /* done + banner */
+  #screen-done, #screen-banner { text-align: center; padding-top: 10vh; }
+  #screen-done p, #screen-banner p { color: var(--muted); }
+  #refresh {
+    margin-top: 10px; font-size: 15px; font-weight: 600; padding: 11px 20px;
+    border: none; border-radius: 10px; background: var(--accent); color: #fff; cursor: pointer;
+  }
+
+  /* sidebar */
+  #backdrop {
+    position: fixed; inset: 0; background: rgba(15, 25, 36, .45); z-index: 20;
+  }
+  #sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0; z-index: 21;
+    width: min(340px, 88vw); background: var(--card);
+    box-shadow: 4px 0 18px rgba(16,42,67,.18);
+    display: flex; flex-direction: column;
+  }
+  .sidebar-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 14px 16px; border-bottom: 1px solid var(--border);
+  }
+  .sidebar-head strong { flex: 1; font-size: 16px; }
+  #sort-toggle {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    font-size: 12px; font-weight: 600; padding: 6px 10px; cursor: pointer; color: var(--text);
+  }
+  #close-sidebar {
+    background: none; border: none; font-size: 18px; cursor: pointer; color: var(--muted); padding: 4px;
+  }
+  #labels-list { flex: 1; overflow-y: auto; }
+  .label-row {
+    display: block; width: 100%; text-align: left; background: none; border: none;
+    border-bottom: 1px solid var(--border); padding: 12px 16px; cursor: pointer; font: inherit; color: inherit;
+  }
+  .label-row:hover { background: var(--bg); }
+  .label-row .row-title {
+    font-weight: 600; font-size: 14px; margin-bottom: 4px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .row-meta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .chip {
+    border-radius: 999px; color: #fff; font-weight: 700; font-size: 11px;
+    padding: 2px 9px; text-transform: capitalize;
+  }
+  .chip.positive { background: var(--positive); }
+  .chip.neutral  { background: var(--neutral); }
+  .chip.negative { background: var(--negative); }
+  .chip.mixed    { background: var(--mixed); }
+  .chip.uncertain { background: var(--uncertain); }
+  .chip.notabout { background: transparent; border: 1px solid var(--muted); color: var(--muted); }
+  .chip.country  { background: var(--accent); }
+  .empty-list { padding: 24px 16px; color: var(--muted); font-size: 14px; text-align: center; }
+  #logout {
+    margin: 12px 16px; padding: 10px; border: 1px solid var(--border); border-radius: 10px;
+    background: none; cursor: pointer; font-size: 14px; color: var(--muted);
+  }
+
+  /* toast */
+  #toast {
+    position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 30;
+    background: var(--text); color: #fff; border-radius: 12px; padding: 12px 18px;
+    display: flex; align-items: center; gap: 12px; font-size: 14px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.25); max-width: 90vw;
+  }
+  #toast-retry {
+    background: #fff; color: var(--text); border: none; border-radius: 8px;
+    font-weight: 700; font-size: 13px; padding: 6px 12px; cursor: pointer;
+  }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+
+<header id="topbar" hidden>
+  <button id="burger" aria-label="Open menu">&#9776;</button>
+  <div id="who"></div>
+  <span id="remaining" class="badge" hidden></span>
+</header>
+
+<main>
+  <div id="lang-bar" hidden></div>
+
+  <section id="screen-code" hidden>
+    <h1>Sentiment Labeler</h1>
+    <p>Enter your labeler code to begin.</p>
+    <form id="code-form">
+      <input id="code-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Your code" required>
+      <button type="submit" id="code-submit">Start</button>
+    </form>
+    <p id="code-msg" class="msg" hidden></p>
+  </section>
+
+  <section id="screen-article" hidden>
+    <div id="article-card">
+      <span id="article-lang" hidden></span>
+      <h2 id="article-title"></h2>
+      <article id="article-body"></article>
+    </div>
+    <p class="question">Is this article substantially about <span class="country-name"></span>?</p>
+    <p class="question-help">Yes if it is about something that happens in, is done by, or affects that country.
+      No if the country is only a comparison, background, one item in a list, or a passing mention.</p>
+    <div class="buttons">
+      <button class="sent yes" data-about="yes">Yes</button>
+      <button class="sent no" data-about="no">No</button>
+    </div>
+    <div id="sentiment-step" hidden>
+      <p class="question">How does the article portray <span class="country-name"></span>?</p>
+      <p class="question-help">Conditions or outlook for that country (economy, business climate, politics,
+        security), as they would matter to someone deciding whether to invest or do business there.</p>
+      <div class="buttons">
+        <button class="sent positive" data-sentiment="POSITIVE">Positive</button>
+        <button class="sent neutral" data-sentiment="NEUTRAL">Neutral</button>
+        <button class="sent negative" data-sentiment="NEGATIVE">Negative</button>
+        <button class="sent mixed" data-sentiment="MIXED">Mixed</button>
+        <button class="sent uncertain" data-sentiment="UNCERTAIN">Too little to judge</button>
+      </div>
+    </div>
+    <button id="skip-btn" hidden>Skip this item &rarr;</button>
+    <p id="current-note" hidden></p>
+    <button id="back-to-labeling" hidden>&larr; Back to labeling</button>
+  </section>
+
+  <section id="screen-done" hidden>
+    <h2>All caught up</h2>
+    <p>No items are waiting for you right now.</p>
+    <button id="refresh">Check again</button>
+  </section>
+
+  <section id="screen-banner" hidden>
+    <h2 id="banner-title"></h2>
+    <p id="banner-text"></p>
+  </section>
+</main>
+
+<div id="backdrop" hidden></div>
+<aside id="sidebar" hidden>
+  <div class="sidebar-head">
+    <strong>My answers</strong>
+    <button id="sort-toggle"></button>
+    <button id="close-sidebar" aria-label="Close menu">&#10005;</button>
+  </div>
+  <div id="labels-list"></div>
+  <button id="logout">Switch code</button>
+</aside>
+
+<div id="toast" hidden>
+  <span id="toast-msg"></span>
+  <button id="toast-retry" hidden>Retry</button>
+</div>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+
+const state = {
+  code: localStorage.getItem("labelerCode") || "",
+  sessionId: "",
+  sortDesc: localStorage.getItem("sortOrder") !== "asc",
+  mode: "labeling",          // "labeling" | "review"
+  item: null,                // {doc_id, source_version, country_iso3, country_name, title, body, language}
+  busy: false,
+  langsAll: [],
+  langsSelected: null,       // null = all of the labeler's languages
+};
+try {
+  const saved = JSON.parse(localStorage.getItem("langFilter") || "null");
+  if (Array.isArray(saved) && saved.length) state.langsSelected = saved;
+} catch (e) { /* corrupt value: fall back to all */ }
+
+/* ---------- api ---------- */
+
+async function apiFetch(path, options = {}) {
+  const headers = Object.assign({ "Content-Type": "application/json" }, options.headers || {});
+  if (state.code) headers["X-Labeler-Code"] = state.code;
+  let res;
+  try {
+    res = await fetch(path, Object.assign({}, options, { headers }));
+  } catch (e) {
+    throw { error: "network", status: 0, message: "Network error" };
+  }
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* non-JSON body */ }
+  if (res.ok) return data;
+  const detail = data && data.detail;
+  throw {
+    error: (detail && detail.error) || (data && data.error) || "error",
+    status: res.status,
+    message: (detail && detail.detail) || "",
+  };
+}
+
+// 401 -> code entry, 503 -> not-configured banner, 409 -> item taken, else retry toast.
+function handleError(err, retryFn) {
+  if (err.status === 401) {
+    clearSession();
+    showCodeEntry("Your code is no longer active.");
+  } else if (err.error === "app_not_configured") {
+    showBanner("Not configured yet", "The app is deployed but not connected to BigQuery. Contact the owner.");
+  } else if (err.error === "item_not_available") {
+    showToast("Someone else just finished this item. Loading the next one.");
+    loadNext();
+  } else {
+    showToast("Something went wrong. Please retry.", retryFn);
+  }
+}
+
+/* ---------- screens ---------- */
+
+const SCREENS = ["screen-code", "screen-article", "screen-done", "screen-banner"];
+function showScreen(id) {
+  SCREENS.forEach((s) => { $(s).hidden = s !== id; });
+  hideToast();
+}
+
+function clearSession() {
+  state.code = "";
+  localStorage.removeItem("labelerCode");
+}
+
+function showCodeEntry(msg) {
+  $("topbar").hidden = true;
+  $("lang-bar").hidden = true;
+  closeSidebar();
+  showScreen("screen-code");
+  const el = $("code-msg");
+  el.hidden = !msg;
+  el.textContent = msg || "";
+  $("code-input").value = "";
+  $("code-input").focus();
+}
+
+function showBanner(title, text) {
+  $("topbar").hidden = true;
+  $("lang-bar").hidden = true;
+  closeSidebar();
+  showScreen("screen-banner");
+  $("banner-title").textContent = title;
+  $("banner-text").textContent = text;
+}
+
+function enterApp() {
+  $("topbar").hidden = false;
+  $("who").textContent = state.code;
+  loadMeta();
+  loadNext();
+}
+
+/* ---------- language filter ---------- */
+
+async function loadMeta() {
+  try {
+    const data = await apiFetch("/api/meta");
+    state.langsAll = data.languages || [];
+    if (state.langsSelected) {
+      state.langsSelected = state.langsSelected.filter((l) => state.langsAll.includes(l));
+      if (!state.langsSelected.length) state.langsSelected = null;
+    }
+  } catch (e) {
+    state.langsAll = [];   // a convenience: never block labeling on it
+  }
+  renderLangBar();
+}
+
+function saveLangFilter() {
+  if (state.langsSelected) localStorage.setItem("langFilter", JSON.stringify(state.langsSelected));
+  else localStorage.removeItem("langFilter");
+}
+
+function renderLangBar() {
+  const bar = $("lang-bar");
+  bar.innerHTML = "";
+  if (state.langsAll.length < 2) { bar.hidden = true; return; }
+  const label = document.createElement("span");
+  label.className = "lang-label";
+  label.textContent = "Languages:";
+  bar.appendChild(label);
+  const addChip = (text, active, onClick) => {
+    const chip = document.createElement("button");
+    chip.className = "lang-chip" + (active ? " active" : "");
+    chip.textContent = text;
+    chip.addEventListener("click", onClick);
+    bar.appendChild(chip);
+  };
+  addChip("All", state.langsSelected === null, () => {
+    state.langsSelected = null; saveLangFilter(); renderLangBar();
+    if (state.mode === "labeling") loadNext();
+  });
+  state.langsAll.forEach((lang) => {
+    const active = state.langsSelected !== null && state.langsSelected.includes(lang);
+    addChip(lang, active, () => {
+      if (state.langsSelected === null) state.langsSelected = [lang];
+      else if (active) {
+        state.langsSelected = state.langsSelected.filter((l) => l !== lang);
+        if (!state.langsSelected.length) state.langsSelected = null;
+      } else state.langsSelected = state.langsSelected.concat([lang]);
+      saveLangFilter(); renderLangBar();
+      if (state.mode === "labeling") loadNext();
+    });
+  });
+  updateLangBarVisibility();
+}
+
+function updateLangBarVisibility() {
+  const onQueue = !$("screen-article").hidden && state.mode === "labeling";
+  const onDone = !$("screen-done").hidden;
+  $("lang-bar").hidden = state.langsAll.length < 2 || !(onQueue || onDone);
+}
+
+function setRemaining(n) {
+  const badge = $("remaining");
+  if (n === null) { badge.hidden = true; return; }
+  badge.hidden = false;
+  badge.textContent = n + " remaining";
+}
+
+/* ---------- labeling flow ---------- */
+
+async function loadNext() {
+  state.mode = "labeling";
+  $("back-to-labeling").hidden = true;
+  $("current-note").hidden = true;
+  try {
+    const param = state.langsSelected ? "?languages=" + encodeURIComponent(state.langsSelected.join(",")) : "";
+    const data = await apiFetch("/api/next-item" + param);
+    if (!data.item) {
+      setRemaining(0);
+      showScreen("screen-done");
+      updateLangBarVisibility();
+      return;
+    }
+    setRemaining(data.remaining);
+    renderItem(data.item, null);
+  } catch (err) {
+    handleError(err, loadNext);
+  }
+}
+
+function renderItem(item, current) {
+  state.item = item;
+  showScreen("screen-article");
+  $("skip-btn").hidden = state.mode !== "labeling";
+  $("article-title").textContent = item.title || "(untitled)";
+  $("article-body").textContent = item.body || "(no article text)";
+  $("article-body").scrollTop = 0;
+  document.querySelectorAll(".country-name").forEach((el) => {
+    el.textContent = item.country_name || item.country_iso3;
+  });
+  const langBadge = $("article-lang");
+  langBadge.hidden = !item.language;
+  langBadge.textContent = item.language || "";
+
+  const about = current ? current.is_about_country : null;
+  document.querySelectorAll("[data-about]").forEach((btn) => {
+    btn.disabled = false;
+    btn.classList.toggle("selected", about !== null && btn.dataset.about === (about ? "yes" : "no"));
+  });
+  document.querySelectorAll("[data-sentiment]").forEach((btn) => {
+    btn.disabled = false;
+    btn.classList.toggle("selected", !!current && btn.dataset.sentiment === current.sentiment);
+  });
+  $("sentiment-step").hidden = about !== true;
+  updateLangBarVisibility();
+  window.scrollTo(0, 0);
+}
+
+function setButtonsDisabled(disabled) {
+  document.querySelectorAll(".sent").forEach((b) => { b.disabled = disabled; });
+}
+
+async function submitAnswer(answer) {
+  if (state.busy || !state.item) return;
+  state.busy = true;
+  setButtonsDisabled(true);
+  const payload = Object.assign({
+    doc_id: state.item.doc_id,
+    source_version: state.item.source_version,
+    country_iso3: state.item.country_iso3,
+    session_id: state.sessionId,
+  }, answer);
+  try {
+    await apiFetch("/api/labels", { method: "POST", body: JSON.stringify(payload) });
+    if (state.mode === "review") {
+      setButtonsDisabled(false);
+      showCurrentNote(answer, new Date().toISOString());
+      showToast("Answer updated.");
+    } else {
+      await loadNext();
+    }
+  } catch (err) {
+    setButtonsDisabled(false);
+    handleError(err, () => submitAnswer(answer));
+  } finally {
+    state.busy = false;
+  }
+}
+
+function describe(answer) {
+  if (answer.is_skip) return "skipped";
+  if (answer.is_about_country === false) return "not about this country";
+  return (answer.sentiment || "").toLowerCase();
+}
+
+function showCurrentNote(answer, isoDate) {
+  const el = $("current-note");
+  el.hidden = false;
+  const when = isoDate ? new Date(isoDate).toLocaleString() : "";
+  el.textContent = "Your answer: " + describe(answer) + (when ? " (" + when + ")" : "") + ".";
+}
+
+/* ---------- revisit flow ---------- */
+
+async function openReview(label) {
+  closeSidebar();
+  try {
+    const q = "?doc_id=" + encodeURIComponent(label.doc_id)
+      + "&source_version=" + encodeURIComponent(label.source_version)
+      + "&country_iso3=" + encodeURIComponent(label.country_iso3);
+    const data = await apiFetch("/api/items" + q);
+    state.mode = "review";
+    renderItem(data.item, data.current);
+    $("back-to-labeling").hidden = false;
+    if (data.current) {
+      showCurrentNote({ is_skip: data.current.is_skip, is_about_country: data.current.is_about_country,
+                        sentiment: data.current.sentiment }, data.current.labeled_at);
+    }
+  } catch (err) {
+    handleError(err, () => openReview(label));
+  }
+}
+
+/* ---------- sidebar ---------- */
+
+function openSidebar() {
+  $("sidebar").hidden = false;
+  $("backdrop").hidden = false;
+  refreshSortToggle();
+  loadLabels();
+}
+
+function closeSidebar() {
+  $("sidebar").hidden = true;
+  $("backdrop").hidden = true;
+}
+
+function refreshSortToggle() {
+  $("sort-toggle").textContent = state.sortDesc ? "Newest first ⇅" : "Oldest first ⇅";
+}
+
+function chip(className, text) {
+  const el = document.createElement("span");
+  el.className = "chip " + className;
+  el.textContent = text;
+  return el;
+}
+
+async function loadLabels() {
+  const list = $("labels-list");
+  list.innerHTML = '<div class="empty-list">Loading…</div>';
+  try {
+    const data = await apiFetch("/api/my-labels?order=" + (state.sortDesc ? "desc" : "asc"));
+    list.innerHTML = "";
+    if (!data.labels.length) {
+      list.innerHTML = '<div class="empty-list">No answers yet.</div>';
+      return;
+    }
+    data.labels.forEach((label) => {
+      const row = document.createElement("button");
+      row.className = "label-row";
+      row.type = "button";
+      const title = document.createElement("div");
+      title.className = "row-title";
+      title.textContent = label.title || "(article no longer available)";
+      const meta = document.createElement("div");
+      meta.className = "row-meta";
+      meta.appendChild(chip("country", label.country_name || label.country_iso3));
+      if (label.is_skip) meta.appendChild(chip("skipped", "skipped"));
+      else if (label.is_about_country === false) meta.appendChild(chip("notabout", "not about"));
+      else meta.appendChild(chip((label.sentiment_label || "").toLowerCase(), (label.sentiment_label || "").toLowerCase()));
+      const when = document.createElement("span");
+      when.textContent = label.labeled_at ? new Date(label.labeled_at).toLocaleString() : "";
+      meta.appendChild(when);
+      row.appendChild(title);
+      row.appendChild(meta);
+      row.addEventListener("click", () => openReview(label));
+      list.appendChild(row);
+    });
+  } catch (err) {
+    list.innerHTML = "";
+    handleError(err, loadLabels);
+  }
+}
+
+/* ---------- toast ---------- */
+
+let toastTimer = null;
+function showToast(msg, retryFn) {
+  $("toast-msg").textContent = msg;
+  const retry = $("toast-retry");
+  retry.hidden = !retryFn;
+  retry.onclick = retryFn ? () => { hideToast(); retryFn(); } : null;
+  $("toast").hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, retryFn ? 8000 : 3000);
+}
+function hideToast() {
+  $("toast").hidden = true;
+  clearTimeout(toastTimer);
+}
+
+/* ---------- boot + events ---------- */
+
+async function login(code) {
+  const data = await apiFetch("/api/login", { method: "POST", body: JSON.stringify({ code }) });
+  state.sessionId = data.session_id || "";
+  localStorage.setItem("labelerCode", state.code);
+}
+
+$("code-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const code = $("code-input").value.trim();
+  if (!code) return;
+  $("code-submit").disabled = true;
+  state.code = code;
+  try {
+    await login(code);
+    enterApp();
+  } catch (err) {
+    state.code = "";
+    if (err.status === 401) {
+      $("code-msg").hidden = false;
+      $("code-msg").textContent = "Code not recognized.";
+    } else {
+      handleError(err);
+    }
+  } finally {
+    $("code-submit").disabled = false;
+  }
+});
+
+document.querySelectorAll("[data-about]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (btn.dataset.about === "no") {
+      submitAnswer({ is_about_country: false });
+      return;
+    }
+    document.querySelectorAll("[data-about]").forEach((b) => b.classList.toggle("selected", b === btn));
+    $("sentiment-step").hidden = false;
+    $("sentiment-step").scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+});
+document.querySelectorAll("[data-sentiment]").forEach((btn) => {
+  btn.addEventListener("click", () => submitAnswer({ is_about_country: true, sentiment: btn.dataset.sentiment }));
+});
+
+$("skip-btn").addEventListener("click", () => submitAnswer({ is_skip: true }));
+$("back-to-labeling").addEventListener("click", loadNext);
+$("refresh").addEventListener("click", loadNext);
+$("burger").addEventListener("click", openSidebar);
+$("close-sidebar").addEventListener("click", closeSidebar);
+$("backdrop").addEventListener("click", closeSidebar);
+$("sort-toggle").addEventListener("click", () => {
+  state.sortDesc = !state.sortDesc;
+  localStorage.setItem("sortOrder", state.sortDesc ? "desc" : "asc");
+  refreshSortToggle();
+  loadLabels();
+});
+$("logout").addEventListener("click", () => { clearSession(); showCodeEntry(); });
+
+(async function boot() {
+  if (!state.code) { showCodeEntry(); return; }
+  try {
+    await login(state.code);
+    enterApp();
+  } catch (err) {
+    if (err.status === 401) { clearSession(); showCodeEntry(); }
+    else handleError(err, boot);
+  }
+})();
+</script>
+</body>
+</html>
