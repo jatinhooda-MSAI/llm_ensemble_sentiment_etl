@@ -98,3 +98,52 @@ def login(body: LoginRequest) -> dict:
 @app.get("/api/meta")
 def meta(labeler: dict = Depends(require_labeler)) -> dict:
     return {"languages": _bq_call(bq.queue_languages, labeler), "sentiments": list(SENTIMENTS)}
+
+
+@app.get("/api/next-item")
+def next_item(languages: str = Query(""), labeler: dict = Depends(require_labeler)) -> dict:
+    wanted = [lang.strip() for lang in languages.split(",") if lang.strip()]
+    item, remaining = _bq_call(bq.next_item, labeler, bq.allowed_languages(labeler, wanted))
+    return {"item": item, "remaining": remaining}
+
+
+class LabelRequest(BaseModel):
+    doc_id: str
+    source_version: str
+    country_iso3: str
+    is_about_country: bool | None = None
+    sentiment: str | None = None
+    is_skip: bool = False
+    session_id: str = ""
+
+
+@app.post("/api/labels")
+def post_label(body: LabelRequest, labeler: dict = Depends(require_labeler)) -> dict:
+    country = body.country_iso3.strip().upper()
+    if not (body.doc_id.strip() and body.source_version.strip() and len(country) == 3):
+        raise _error(422, "invalid_item", "doc_id, source_version and country_iso3 are required")
+    sentiment = (body.sentiment or "").strip().upper() or None
+    if not body.is_skip:
+        if body.is_about_country is None:
+            raise _error(422, "missing_answer", "is_about_country is required")
+        if body.is_about_country and sentiment not in SENTIMENTS:
+            raise _error(422, "invalid_sentiment", f"must be one of {list(SENTIMENTS)}")
+    result = _bq_call(bq.insert_label, labeler, body.doc_id.strip(), body.source_version.strip(),
+                      country, body.is_about_country, sentiment, body.is_skip, body.session_id)
+    return {"ok": True, **result}
+
+
+@app.get("/api/my-labels")
+def my_labels(order: str = Query("desc"), limit: int = Query(200),
+              labeler: dict = Depends(require_labeler)) -> dict:
+    limit = max(1, min(limit, config.labels_page_limit))
+    return {"labels": _bq_call(bq.my_labels, labeler, order.lower() != "asc", limit)}
+
+
+@app.get("/api/items")
+def get_item(doc_id: str, source_version: str, country_iso3: str,
+             labeler: dict = Depends(require_labeler)) -> dict:
+    result = _bq_call(bq.get_item, labeler, doc_id, source_version, country_iso3.upper())
+    if result is None:
+        raise _error(404, "item_not_found", doc_id)
+    return result
