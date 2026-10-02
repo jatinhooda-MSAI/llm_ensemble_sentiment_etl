@@ -1,0 +1,26 @@
+# Sentiment scoring: which models label each article, and how runs behave.
+# Changing a model_id, the prompt or a model's country_field creates a new
+# model_version automatically (registered in gold.dim_model_version); the
+# old one is retired.
+# Pin exact model versions here, never a "latest" alias.
+
+prompt_name: tag_and_sentiment_v1
+prompt_path: etl/sentiment_scoring/prompts/tag_and_sentiment_v1.md
+
+schedule:                      # UTC; used by the deploy commands
+  scoring_cron: "0 6,18 * * *" # submit batches + run serial models, twice a day
+  collect_cron: "30 * * * *"   # collect finished batches, rebuild the series
+
+run_limits:
+  max_docs_per_model: 2000     # cap per scheduled run, per model
+  lookback_days: 7             # scheduled runs only score articles published this recently
+  serial_concurrency: 2        # parallel requests for SERIAL models (Gemma capacity is shared; 429s at 4)
+
+aggregation:
+  window_days: 14              # each run rebuilds this many trailing days
+  min_docs: 3                  # below this a country-day is flagged LOW coverage (still shown)
+  min_outlets: 2
+
+bias:
+  window_days: 14
+  min_per_language: 10         # a language needs this many articles to enter the KL check
