@@ -46,3 +46,86 @@ def user_message(doc: dict) -> str:
         f"Title: {doc.get('title') or ''}\n\n"
         f"Article:\n{doc.get('body_text') or ''}"
     )
+
+
+def response_schema(country_codes: list, free_country: bool = False) -> dict:
+    """Kept to the JSON Schema subset all three providers accept (types, enums,
+    required, no extra keys). Ranges and caps are enforced in validate().
+
+    free_country: country_iso3 is any string instead of an enum of our codes.
+    Under strict decoding the enum forced a model with no thinking step onto a
+    look-alike code (Saudi Arabia -> Sudan, Kuwait -> Kenya); free, it names the
+    real country and validate() drops codes that are not in the list."""
+    country = {"type": "string"} if free_country else {"type": "string", "enum": sorted(country_codes)}
+    return {
+        "type": "object",
+        "properties": {
+            "countries": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "country_iso3": country,
+                        "evidence": {"type": "array", "items": {"type": "string"}},
+                        "sentiment_label": {"type": "string", "enum": list(LABELS)},
+                        "sentiment_score": {"type": "number"},
+                    },
+                    "required": ["country_iso3", "evidence", "sentiment_label", "sentiment_score"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["countries"],
+        "additionalProperties": False,
+    }
+
+
+def _extract_json(text: str):
+    text = (text or "").strip()
+    if text.startswith("```"):  # tolerate a fenced block
+        text = text.strip("`")
+        text = text[text.find("{"):] if "{" in text else text
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end < start:
+        raise ResponseError("no JSON object in the answer")
+    try:
+        return json.loads(text[start:end + 1])
+    except json.JSONDecodeError as exc:
+        raise ResponseError(f"invalid JSON: {exc}") from exc
+
+
+def validate(answer_text: str, country_codes: set) -> list:
+    """Return a clean list of {country_iso3, evidence, sentiment_label,
+    sentiment_score}. Unknown countries are dropped; duplicates keep the first
+    entry; at most MAX_COUNTRIES are kept."""
+    data = _extract_json(answer_text)
+    if data == {}:  # an empty object means "no countries"
+        return []
+    if not isinstance(data, dict) or not isinstance(data.get("countries"), list):
+        raise ResponseError("answer has no 'countries' list")
+    cleaned, seen = [], set()
+    for item in data["countries"]:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("country_iso3") or "").strip().upper()
+        if code not in country_codes or code in seen:
+            continue
+        label = str(item.get("sentiment_label") or "").strip().upper()
+        if label not in LABELS:
+            raise ResponseError(f"unknown label {label!r} for {code}")
+        try:
+            score = float(item.get("sentiment_score"))
+        except (TypeError, ValueError):
+            score = 0.0
+        evidence = [str(e)[:MAX_EVIDENCE_CHARS] for e in (item.get("evidence") or [])
+                    if str(e).strip()][:MAX_EVIDENCE]
+        cleaned.append({
+            "country_iso3": code,
+            "evidence": evidence,
+            "sentiment_label": label,
+            "sentiment_score": max(-1.0, min(1.0, score)),
+        })
+        seen.add(code)
+        if len(cleaned) == MAX_COUNTRIES:
+            break
+    return cleaned
