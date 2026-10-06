@@ -54,3 +54,27 @@ def _openapi_schema(schema: dict) -> dict:
     if isinstance(schema, list):
         return [_openapi_schema(v) for v in schema]
     return schema
+
+
+# ── Response text extraction ─────────────────────────────────────────────────
+
+def _as_json(value):
+    if isinstance(value, str):
+        return json.loads(value)
+    return value or {}
+
+
+def gemini_text(response) -> str:
+    data = _as_json(response)
+    parts = ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+    return "".join(p.get("text", "") for p in parts if not p.get("thought"))
+
+
+def claude_text(response) -> str:
+    data = _as_json(response)
+    return "".join(b.get("text", "") for b in data.get("content") or [] if b.get("type") == "text")
+
+
+def gemma_text(response) -> str:
+    data = _as_json(response)
+    return ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
