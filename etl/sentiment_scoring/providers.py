@@ -78,3 +78,71 @@ def claude_text(response) -> str:
 def gemma_text(response) -> str:
     data = _as_json(response)
     return ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+
+
+# ── Vertex REST client ───────────────────────────────────────────────────────
+
+def _host(location: str) -> str:
+    if location == "global":
+        return "aiplatform.googleapis.com"
+    if location in ("us", "eu"):
+        return f"aiplatform.{location}.rep.googleapis.com"
+    return f"{location}-aiplatform.googleapis.com"
+
+
+class VertexClient:
+    """Thin REST wrapper. Auth: GCLOUD_TOKEN env (local runs) or ADC."""
+
+    def __init__(self, project: str):
+        self.project = project
+        self._session = None
+
+    def _http(self):
+        if self._session is None:
+            token = os.getenv("GCLOUD_TOKEN")
+            if token:
+                import requests
+
+                self._session = requests.Session()
+                self._session.headers["Authorization"] = f"Bearer {token}"
+            else:
+                import google.auth
+                from google.auth.transport.requests import AuthorizedSession
+
+                creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+                self._session = AuthorizedSession(creds)
+        return self._session
+
+    def _url(self, location: str, path: str) -> str:
+        return f"https://{_host(location)}/v1/projects/{self.project}/locations/{location}/{path}"
+
+    def create_batch_job(self, location: str, model_path: str, input_table: str,
+                         output_table: str, display_name: str) -> dict:
+        body = {
+            "displayName": display_name,
+            "model": model_path,
+            "inputConfig": {"instancesFormat": "bigquery",
+                            "bigquerySource": {"inputUri": f"bq://{input_table}"}},
+            "outputConfig": {"predictionsFormat": "bigquery",
+                             "bigqueryDestination": {"outputUri": f"bq://{output_table}"}},
+        }
+        r = self._http().post(self._url(location, "batchPredictionJobs"), json=body, timeout=60)
+        if r.status_code >= 300:
+            raise RuntimeError(f"batch job create failed ({r.status_code}): {r.text[:500]}")
+        return r.json()
+
+    def get_job(self, job_name: str, location: str) -> dict:
+        r = self._http().get(f"https://{_host(location)}/v1/{job_name}", timeout=60)
+        r.raise_for_status()
+        return r.json()
+
+    def chat_completion(self, location: str, body: dict, retries: int = 6) -> dict:
+        url = self._url(location, "endpoints/openapi/chat/completions")
+        for attempt in range(retries + 1):
+            r = self._http().post(url, json=body, timeout=180)
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code in (429, 500, 502, 503, 504) and attempt < retries:
+                time.sleep(min(60, 2 ** attempt * 3))
+                continue
+            raise RuntimeError(f"chat completion failed ({r.status_code}): {r.text[:300]}")
