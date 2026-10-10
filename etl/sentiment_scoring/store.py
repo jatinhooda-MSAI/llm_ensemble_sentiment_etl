@@ -119,3 +119,70 @@ def register_model_versions(client, entries: list) -> list:
             rows.append(row)
     _stream(client, MODEL_VERSION_TABLE, rows)
     return rows
+
+
+# ── Work selection ───────────────────────────────────────────────────────────
+
+def latest_batch_jobs(client, states=IN_FLIGHT_STATES, model_version: str = None) -> list:
+    sql = f"""
+        SELECT * FROM `{fq(BATCH_JOB_TABLE)}`
+        WHERE TRUE
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY batch_id ORDER BY recorded_at DESC) = 1
+          AND state IN UNNEST(@states)
+          {"AND model_version = @mv" if model_version else ""}
+    """
+    params = {"states": list(states)}
+    if model_version:
+        params["mv"] = model_version
+    return _query(client, sql, params)
+
+
+def _existing(client, table_ids: list) -> list:
+    from google.api_core.exceptions import NotFound
+
+    out = []
+    for t in table_ids:
+        try:
+            client.get_table(t)
+            out.append(t)
+        except NotFound:
+            pass  # expired scratch table: those articles become pending again
+    return out
+
+
+def pending_docs(client, model_version: str, limit: int, lookback_days: int = None) -> list:
+    """Current article versions this model has no usable answer for (an unusable
+    answer is retried once) and that are not already in one of its unfinished
+    batch jobs. Newest first."""
+    in_flight = _existing(client, [j.input_table for j in
+                                   latest_batch_jobs(client, model_version=model_version)
+                                   if j.input_table])
+    flight_cte = ("in_flight AS (" + " UNION DISTINCT ".join(
+        f"SELECT doc_id, source_version FROM `{t}`" for t in in_flight) + "),") if in_flight else ""
+    flight_join = ("LEFT JOIN in_flight AS f USING (doc_id, source_version)" if in_flight else "")
+    flight_where = "AND f.doc_id IS NULL" if in_flight else ""
+    window = ("AND d.published_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)"
+              if lookback_days else "")
+    params = {"mv": model_version, "limit": int(limit)}
+    if lookback_days:
+        params["days"] = int(lookback_days)
+    rows = _query(client, f"""
+        WITH {flight_cte}
+        answered AS (
+          SELECT doc_id, source_version FROM `{fq(LABEL_TABLE)}`
+          WHERE labeler_type = 'MODEL' AND labeler_id = @mv
+          GROUP BY doc_id, source_version
+          HAVING COUNTIF(tag_status != 'ERROR') > 0 OR COUNTIF(tag_status = 'ERROR') >= 2
+        )
+        SELECT d.doc_id, d.source_version, d.source_id, d.title, d.body_text,
+               d.language_iso639_3, d.published_at
+        FROM `{fq(DOCUMENT_VIEW)}` AS d
+        LEFT JOIN answered AS a USING (doc_id, source_version)
+        {flight_join}
+        WHERE a.doc_id IS NULL
+          {flight_where}
+          {window}
+        ORDER BY d.published_at DESC
+        LIMIT @limit
+    """, params)
+    return [dict(r.items()) for r in rows]
