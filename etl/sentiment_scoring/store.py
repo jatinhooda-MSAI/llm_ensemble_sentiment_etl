@@ -261,3 +261,63 @@ def log_run(client, pipeline: str, run_id: str, started_at, status: str,
 
 def record_batch_state(client, row: dict):
     _stream(client, BATCH_JOB_TABLE, [{**row, "recorded_at": utcnow()}])
+
+
+# ── Batch input/output tables ────────────────────────────────────────────────
+
+def create_input_table(client, table_id: str, rows: list):
+    """Scratch input for a Vertex batch job (expires with its dataset default)."""
+    from google.cloud import bigquery
+
+    schema = [bigquery.SchemaField("doc_id", "STRING"),
+              bigquery.SchemaField("source_version", "STRING"),
+              bigquery.SchemaField("custom_id", "STRING"),
+              bigquery.SchemaField("request", "JSON")]
+    # Pass the request as an object: a json.dumps() string would be stored as a
+    # JSON *string*, which Vertex rejects ("Failed to parse JSON into proto").
+    job = client.load_table_from_json(
+        rows, table_id, job_config=bigquery.LoadJobConfig(
+            schema=schema, write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE))
+    job.result()
+
+
+def read_rows(client, table_id: str) -> list:
+    return [dict(r.items()) for r in client.query(f"SELECT * FROM `{table_id}`").result()]
+
+
+def doc_published_at(client, doc_ids: list) -> dict:
+    if not doc_ids:
+        return {}
+    rows = _query(client, f"""
+        SELECT doc_id, ANY_VALUE(published_at) AS published_at
+        FROM `{fq(DOCUMENT_VIEW)}` WHERE doc_id IN UNNEST(@ids) GROUP BY doc_id
+    """, {"ids": list(set(doc_ids))})
+    return {r.doc_id: r.published_at for r in rows}
+
+
+def run_sql_file(client, path, params: dict):
+    """Run a (possibly multi-statement) SQL file with named parameters."""
+    from pathlib import Path
+
+    from google.cloud import bigquery
+
+    qp = []
+    for name, value in params.items():
+        kind = "INT64" if isinstance(value, int) else "STRING"
+        qp.append(bigquery.ScalarQueryParameter(name, kind, value))
+    job = client.query(Path(path).read_text(encoding="utf-8"),
+                       job_config=bigquery.QueryJobConfig(query_parameters=qp))
+    job.result()
+    return job
+
+
+def consensus_version(client) -> str:
+    rows = _query(client, f"""
+        SELECT TO_HEX(SHA256(STRING_AGG(model_version, ',' ORDER BY model_version))) AS v
+        FROM (
+          SELECT model_version, status FROM `{fq(MODEL_VERSION_TABLE)}`
+          WHERE task = @task
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY model_version ORDER BY recorded_at DESC) = 1
+        ) WHERE status = 'ACTIVE'
+    """, {"task": TASK})
+    return rows[0].v if rows else None
