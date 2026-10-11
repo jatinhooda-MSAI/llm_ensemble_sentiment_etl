@@ -186,3 +186,78 @@ def pending_docs(client, model_version: str, limit: int, lookback_days: int = No
         LIMIT @limit
     """, params)
     return [dict(r.items()) for r in rows]
+
+
+# ── Label rows ────────────────────────────────────────────────────────────────
+
+def label_rows(doc: dict, model_version: str, run_id: str, countries=None, error: str = None) -> list:
+    """Rows for one model answer: one per tagged country, a single NO_COUNTRY
+    row when none qualified, or a single ERROR row when the answer was unusable."""
+    published = doc.get("published_at")
+    base = {
+        "doc_id": doc["doc_id"],
+        "source_version": doc["source_version"],
+        "labeler_type": "MODEL",
+        "labeler_id": model_version,
+        "run_id": run_id,
+        "published_date": published.date() if isinstance(published, datetime) else None,
+        "created_at": utcnow(),
+        "is_about_country": None, "reason": None, "is_skip": None,
+    }
+    empty = {"country_iso3": None, "sentiment_label": None, "sentiment_score": None, "evidence": [],
+             "error_detail": None}
+    if error is not None:
+        return [{**base, **empty, "label_id": str(uuid.uuid4()), "tag_status": "ERROR",
+                 "error_detail": str(error)[:1000]}]
+    if not countries:
+        return [{**base, **empty, "label_id": str(uuid.uuid4()), "tag_status": "NO_COUNTRY"}]
+    return [{
+        **base,
+        "label_id": str(uuid.uuid4()),
+        "tag_status": "TAGGED",
+        "country_iso3": c["country_iso3"],
+        "sentiment_label": c["sentiment_label"],
+        "sentiment_score": c["sentiment_score"],
+        "evidence": c["evidence"],
+        "error_detail": None,
+    } for c in countries]
+
+
+def write_labels(client, rows: list):
+    """Batch-load label rows (load job, not streaming)."""
+    if not rows:
+        return
+    from google.cloud import bigquery
+
+    table = client.get_table(fq(LABEL_TABLE))
+    job = client.load_table_from_json(
+        [{k: _iso(v) for k, v in r.items()} for r in rows], table,
+        job_config=bigquery.LoadJobConfig(
+            schema=table.schema, write_disposition=bigquery.WriteDisposition.WRITE_APPEND))
+    job.result()
+
+
+# ── Run and batch-job bookkeeping ─────────────────────────────────────────────
+
+def new_run_id(pipeline: str) -> str:
+    return f"{pipeline.lower()}-{utcnow().strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
+
+
+def log_run(client, pipeline: str, run_id: str, started_at, status: str,
+            rows_written: int = None, error: str = None, billing_tag: str = None):
+    """One row in the existing audit.etl_run (source_id holds the pipeline name).
+    billing_tag is NULL for runs on the project's own billing."""
+    _stream(client, RUN_TABLE, [{
+        "billing_tag": billing_tag,
+        "source_id": pipeline,
+        "run_version": run_id,
+        "started_at": started_at,
+        "finished_at": utcnow(),
+        "status": status,
+        "rows_written": rows_written,
+        "error_message": (error or None) and str(error)[:2000],
+    }])
+
+
+def record_batch_state(client, row: dict):
+    _stream(client, BATCH_JOB_TABLE, [{**row, "recorded_at": utcnow()}])
