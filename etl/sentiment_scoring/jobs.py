@@ -73,3 +73,25 @@ def _logged(pipeline, billing_tag=None):
                 raise
         return inner
     return wrap
+
+
+# ── register ─────────────────────────────────────────────────────────────────
+
+@_logged("SCORE_REGISTER")
+def register(ctx, run_id):
+    entries = [{
+        "model_version": ctx.version(m),
+        "provider": m.provider,
+        "model_id": m.model_id,
+        "call_mode": m.call_mode,
+        "prompt_name": ctx.cfg.prompt_name,
+        "prompt_sha256": P.prompt_sha256(ctx.system),
+        "prompt_text": ctx.system,
+        "params": {"slot": m.slot, "location": m.location,
+                   "max_output_tokens": m.max_output_tokens, "country_field": m.country_field},
+        "notes": None,
+    } for m in ctx.cfg.enabled_models]
+    written = S.register_model_versions(ctx.client, entries)
+    return {"active": [e["model_version"] for e in entries],
+            "changes": [(r["model_version"], r["status"]) for r in written],
+            "rows_written": len(written)}
