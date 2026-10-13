@@ -97,6 +97,23 @@ def register(ctx, run_id):
             "rows_written": len(written)}
 
 
+# ── answers -> rows ──────────────────────────────────────────────────────────
+
+def _rows_for_answer(ctx, doc, model_version, run_id, text=None, error=None):
+    if error is None:
+        try:
+            return S.label_rows(doc, model_version, run_id, countries=P.validate(text, ctx.codes))
+        except P.ResponseError as exc:
+            error = str(exc)
+    return S.label_rows(doc, model_version, run_id, error=error)
+
+
+def _flush(ctx, buffer):
+    if buffer:
+        S.write_labels(ctx.client, buffer)
+    return []
+
+
 # ── submit (BATCH) ───────────────────────────────────────────────────────────
 
 def _request_for(ctx, spec, doc):
@@ -135,3 +152,66 @@ def submit(ctx, run_id, limit=None, lookback_days=None):
             "n_requests": len(docs), "state": "SUBMITTED", "submitted_at": S.utcnow()})
         out[spec.slot] = {"batch_id": batch_id, "n_requests": len(docs), "job": job["name"]}
     return out
+
+
+# ── collect (BATCH) ──────────────────────────────────────────────────────────
+
+def _job_location(job_name: str) -> str:
+    return job_name.split("/locations/")[1].split("/")[0]
+
+
+def _doc_key(row):
+    if row.get("doc_id") and row.get("source_version"):
+        return row["doc_id"], row["source_version"]
+    doc_id, _, version = (row.get("custom_id") or "").partition("|")
+    return doc_id, version
+
+
+@_logged("SCORE_COLLECT")
+def collect(ctx, run_id):
+    out, written = {}, 0
+    for j in S.latest_batch_jobs(ctx.client):
+        if j.provider == "ANTHROPIC_API":  # collected by anthropic_history, not Vertex
+            continue
+        info = ctx.vertex.get_job(j.vertex_job_name, _job_location(j.vertex_job_name))
+        state = info.get("state")
+        base = {k: j[k] for k in ("batch_id", "run_id", "model_version", "provider", "vertex_job_name",
+                                  "input_table", "output_table", "n_requests", "submitted_at")}
+        if state not in DONE_STATES:
+            if j.state != "RUNNING" and state == "JOB_STATE_RUNNING":
+                S.record_batch_state(ctx.client, {**base, "state": "RUNNING"})
+            out[j.batch_id] = state
+            continue
+        if state not in ("JOB_STATE_SUCCEEDED", "JOB_STATE_PARTIALLY_SUCCEEDED"):
+            S.record_batch_state(ctx.client, {**base, "state": "FAILED", "completed_at": S.utcnow(),
+                                              "error_summary": json.dumps(info.get("error") or {})[:2000]})
+            out[j.batch_id] = state
+            continue
+        rows = S.read_rows(ctx.client, j.output_table)
+        dates = S.doc_published_at(ctx.client, [_doc_key(r)[0] for r in rows])
+        extract = V.gemini_text if j.provider == "GOOGLE" else V.claude_text
+        buffer, n_ok, n_err, n_rejected = [], 0, 0, 0
+        for r in rows:
+            doc_id, version = _doc_key(r)
+            doc = {"doc_id": doc_id, "source_version": version, "published_at": dates.get(doc_id)}
+            if not r.get("response"):  # None or {} (Vertex fills {} plus a status)
+                # Vertex rejected the request itself (no model answer): write nothing,
+                # so the article is pending again for the next run.
+                n_rejected += 1
+                log.warning("[%s] request rejected for %s: %s", j.batch_id, doc_id,
+                            str(r.get("status"))[:200])
+                continue
+            labels = _rows_for_answer(ctx, doc, j.model_version, run_id, text=extract(r["response"]))
+            n_err += labels[0]["tag_status"] == "ERROR"
+            n_ok += labels[0]["tag_status"] != "ERROR"
+            buffer.extend(labels)
+            if len(buffer) >= WRITE_CHUNK:
+                written += len(buffer)
+                buffer = _flush(ctx, buffer)
+        written += len(buffer)
+        _flush(ctx, buffer)
+        S.record_batch_state(ctx.client, {**base, "state": "COLLECTED", "completed_at": S.utcnow(),
+                                          "n_succeeded": n_ok, "n_failed": n_err + n_rejected,
+                                          "error_summary": f"{n_rejected} requests rejected" if n_rejected else None})
+        out[j.batch_id] = {"state": state, "ok": n_ok, "answer_errors": n_err, "rejected": n_rejected}
+    return {"jobs": out, "rows_written": written}
