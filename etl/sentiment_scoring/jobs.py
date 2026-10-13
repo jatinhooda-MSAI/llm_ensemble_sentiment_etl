@@ -95,3 +95,43 @@ def register(ctx, run_id):
     return {"active": [e["model_version"] for e in entries],
             "changes": [(r["model_version"], r["status"]) for r in written],
             "rows_written": len(written)}
+
+
+# ── submit (BATCH) ───────────────────────────────────────────────────────────
+
+def _request_for(ctx, spec, doc):
+    user = P.user_message(doc)
+    if spec.provider == "GOOGLE":
+        return V.gemini_request(ctx.system, user, ctx.schema_for(spec), spec.max_output_tokens)
+    if spec.provider == "ANTHROPIC":
+        return V.claude_request(ctx.system, user, spec.max_output_tokens)
+    raise ValueError(f"no batch request builder for provider {spec.provider}")
+
+
+@_logged("SCORE_SUBMIT")
+def submit(ctx, run_id, limit=None, lookback_days=None):
+    out = {}
+    for spec in ctx.cfg.enabled_models:
+        if spec.call_mode != "BATCH":
+            continue
+        mv = ctx.version(spec)
+        docs = S.pending_docs(ctx.client, mv, limit or ctx.cfg.max_docs_per_model, lookback_days)
+        if not docs:
+            out[spec.slot] = "nothing pending"
+            continue
+        batch_id = f"{spec.slot}_{run_id.replace('-', '_')}"
+        input_table = f"{BQ_PROJECT}.{spec.batch_dataset}.in_{batch_id}"
+        output_table = f"{BQ_PROJECT}.{spec.batch_dataset}.out_{batch_id}"
+        S.create_input_table(ctx.client, input_table, [{
+            "doc_id": d["doc_id"], "source_version": d["source_version"],
+            "custom_id": f"{d['doc_id']}|{d['source_version']}",
+            "request": _request_for(ctx, spec, d),
+        } for d in docs])
+        job = ctx.vertex.create_batch_job(spec.location, MODEL_PATHS[spec.provider].format(spec.model_id),
+                                          input_table, output_table, f"sentiment-{batch_id}")
+        S.record_batch_state(ctx.client, {
+            "batch_id": batch_id, "run_id": run_id, "model_version": mv, "provider": spec.provider,
+            "vertex_job_name": job["name"], "input_table": input_table, "output_table": output_table,
+            "n_requests": len(docs), "state": "SUBMITTED", "submitted_at": S.utcnow()})
+        out[spec.slot] = {"batch_id": batch_id, "n_requests": len(docs), "job": job["name"]}
+    return out
