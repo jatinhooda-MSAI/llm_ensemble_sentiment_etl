@@ -76,3 +76,95 @@ CREATE TABLE IF NOT EXISTS `your-gcp-project.gold.fact_sentiment_signal` (
 PARTITION BY period_start
 CLUSTER BY country_iso3, language_code
 OPTIONS (description = 'Per-country daily sentiment signal (basis of the country sentiment score)');
+
+-- Accuracy, agreement and bias metrics, one row per metric per slice.
+CREATE TABLE IF NOT EXISTS `your-gcp-project.gold.model_evaluation_slice` (
+  evaluation_id   STRING    NOT NULL,
+  evaluation_type STRING    NOT NULL OPTIONS (description = 'ACCURACY | AGREEMENT | BIAS'),
+  subject_version STRING    NOT NULL OPTIONS (description = 'model_version or aggregation_version evaluated'),
+  eval_set_id     STRING             OPTIONS (description = 'Locked human-labeled set, when applicable'),
+  window_start    DATE,
+  window_end      DATE,
+  segment_type    STRING    NOT NULL OPTIONS (description = 'ALL | LANGUAGE | COUNTRY | SOURCE | LABEL'),
+  segment_key     STRING    NOT NULL,
+  metric_name     STRING    NOT NULL OPTIONS (description = 'e.g. f1_macro, kappa_human_human, kl_divergence, weat_effect, name_swap_shift'),
+  metric_value    FLOAT64,
+  metric_json     JSON               OPTIONS (description = 'e.g. a confusion table'),
+  n_items         INT64,
+  threshold       FLOAT64,
+  passed          BOOL,
+  computed_at     TIMESTAMP NOT NULL
+)
+PARTITION BY DATE(computed_at)
+CLUSTER BY metric_name, segment_key;
+
+-- Human labelers (login codes only, no personal details). New row per change.
+CREATE TABLE IF NOT EXISTS `your-gcp-project.gold.dim_labeler` (
+  labeler_id  STRING    NOT NULL,
+  login_code  STRING    NOT NULL,
+  languages   ARRAY<STRING>      OPTIONS (description = 'ISO 639-3 codes the labeler reads'),
+  active      BOOL      NOT NULL,
+  valid_from  TIMESTAMP NOT NULL,
+  valid_to    TIMESTAMP,
+  created_by  STRING
+);
+
+
+
+-- Every model + prompt combination used, with the prompt text itself.
+-- Status changes are new rows; the latest row per model_version is current.
+CREATE TABLE IF NOT EXISTS `your-gcp-project.gold.dim_model_version` (
+  model_version STRING    NOT NULL OPTIONS (description = 'model_id|prompt_name|prompt_sha256[:12]'),
+  task          STRING    NOT NULL OPTIONS (description = 'TAG_AND_SENTIMENT | EMBEDDING | ...'),
+  provider      STRING    NOT NULL OPTIONS (description = 'GOOGLE | ANTHROPIC | GOOGLE_OPEN'),
+  model_id      STRING    NOT NULL OPTIONS (description = 'Exact, pinned Vertex model ID'),
+  call_mode     STRING    NOT NULL OPTIONS (description = 'BATCH | SERIAL'),
+  prompt_name   STRING    NOT NULL,
+  prompt_sha256 STRING    NOT NULL,
+  prompt_text   STRING    NOT NULL,
+  params        JSON,
+  status        STRING    NOT NULL OPTIONS (description = 'ACTIVE | RETIRED'),
+  recorded_at   TIMESTAMP NOT NULL,
+  notes         STRING
+);
+
+
+-- Data-quality problems and failed checks, with evidence.
+CREATE TABLE IF NOT EXISTS `your-gcp-project.audit.dq_issue` (
+  dq_issue_id    STRING    NOT NULL,
+  rule_id        STRING    NOT NULL,
+  severity       STRING    NOT NULL OPTIONS (description = 'BLOCKER | HIGH | MEDIUM | LOW'),
+  source_id      STRING,
+  run_id         STRING,
+  affected_grain JSON,
+  evidence       JSON,
+  disposition    STRING,
+  owner          STRING,
+  opened_at      TIMESTAMP NOT NULL,
+  resolved_at    TIMESTAMP
+)
+PARTITION BY DATE(opened_at)
+CLUSTER BY rule_id, severity;
+
+-- Vertex batch jobs: one row per state change (latest row per batch_id is current).
+CREATE TABLE IF NOT EXISTS `your-gcp-project.audit.llm_batch_job` (
+  batch_id        STRING    NOT NULL,
+  run_id          STRING    NOT NULL,
+  model_version   STRING    NOT NULL,
+  provider        STRING    NOT NULL,
+  vertex_job_name STRING,
+  input_table     STRING,
+  output_table    STRING,
+  n_requests      INT64,
+  state           STRING    NOT NULL OPTIONS (description = 'SUBMITTED | RUNNING | SUCCEEDED | FAILED | COLLECTED'),
+  n_succeeded     INT64,
+  n_failed        INT64,
+  est_cost_usd    FLOAT64,
+  submitted_at    TIMESTAMP,
+  completed_at    TIMESTAMP,
+  recorded_at     TIMESTAMP NOT NULL,
+  error_summary   STRING,
+  billing_tag     STRING             OPTIONS (description = 'NULL = the project\'s own billing; otherwise who paid')
+)
+PARTITION BY DATE(recorded_at)
+CLUSTER BY state, model_version;
