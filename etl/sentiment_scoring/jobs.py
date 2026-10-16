@@ -215,3 +215,35 @@ def collect(ctx, run_id):
                                           "error_summary": f"{n_rejected} requests rejected" if n_rejected else None})
         out[j.batch_id] = {"state": state, "ok": n_ok, "answer_errors": n_err, "rejected": n_rejected}
     return {"jobs": out, "rows_written": written}
+
+
+# ── aggregate and bias ───────────────────────────────────────────────────────
+
+def aggregation_version(ctx) -> str:
+    consensus = S.consensus_version(ctx.client) or "none"
+    params = json.dumps(ctx.cfg.aggregation, sort_keys=True)
+    return hashlib.sha256(f"{consensus}|{params}".encode()).hexdigest()[:16]
+
+
+@_logged("SENTIMENT_AGGREGATE")
+def aggregate(ctx, run_id, window_days=None):
+    agg = ctx.cfg.aggregation
+    version = aggregation_version(ctx)
+    job = S.run_sql_file(ctx.client, SQL_DIR / "04_aggregate_signal.sql", {
+        "window_days": int(window_days or agg.get("window_days", 14)),
+        "aggregation_version": version,
+        "min_docs": int(agg.get("min_docs", 3)),
+        "min_outlets": int(agg.get("min_outlets", 2)),
+    })
+    return {"aggregation_version": version, "rows_written": job.num_dml_affected_rows}
+
+
+@_logged("SENTIMENT_BIAS")
+def bias(ctx, run_id, window_days=None):
+    b = ctx.cfg.bias
+    job = S.run_sql_file(ctx.client, SQL_DIR / "05_bias_kl.sql", {
+        "window_days": int(window_days or b.get("window_days", 14)),
+        "min_per_language": int(b.get("min_per_language", 10)),
+        "evaluation_id": run_id,
+    })
+    return {"rows_written": job.num_dml_affected_rows}
