@@ -188,3 +188,31 @@ SELECT
   n_humans, labeled_by, human_labels,
   models_complete, n_active, n_models_processed, n_models_tagged, unanimous, model_labels
 FROM decided;
+
+-- 3. Work queue for the labeling app: items that still need a human answer.
+--    The app shows an item only to labelers who read its language and have
+--    not answered it yet (labeled_by).
+CREATE OR REPLACE VIEW `your-gcp-project.silver.labeling_queue` AS
+SELECT
+  c.doc_id, c.source_version, c.country_iso3, d.language_iso639_3, d.source_id,
+  c.published_date,
+  CASE
+    WHEN c.n_humans >= 1 THEN 'SECOND_OPINION'
+    WHEN c.unanimous THEN 'RANDOM_AUDIT'
+    ELSE 'MODEL_DISAGREEMENT'
+  END AS reason,
+  c.humans_needed, c.n_humans, IFNULL(c.labeled_by, []) AS labeled_by,
+  CASE WHEN c.n_humans >= 1 THEN 3 WHEN c.unanimous THEN 2 ELSE 1 END AS priority
+FROM `your-gcp-project.silver.sentiment_consensus` AS c
+JOIN `your-gcp-project.silver.v_document` AS d USING (doc_id, source_version)
+WHERE c.needs_human AND c.n_humans < c.humans_needed;
+
+-- 4. Coverage per country, day and language, from the current aggregation.
+CREATE OR REPLACE VIEW `your-gcp-project.gold.sentiment_coverage` AS
+SELECT country_iso3, period_start, language_code, n_docs, n_outlets, n_languages,
+       coverage_confidence, coverage_flag, aggregation_version, computed_at
+FROM `your-gcp-project.gold.fact_sentiment_signal`
+WHERE sector_code = 'ALL' AND narrative_code = 'ALL'
+QUALIFY ROW_NUMBER() OVER (
+  PARTITION BY country_iso3, period_start, language_code
+  ORDER BY computed_at DESC) = 1;
