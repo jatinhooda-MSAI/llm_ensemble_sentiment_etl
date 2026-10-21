@@ -83,3 +83,58 @@ def _cost(usage) -> float:
             + (getattr(usage, "output_tokens", 0) or 0) * RATES["output"]
             + (getattr(usage, "cache_read_input_tokens", 0) or 0) * RATES["cache_read"]
             + (getattr(usage, "cache_creation_input_tokens", 0) or 0) * RATES["cache_write"]) / 1e6
+
+
+def register_standby(ctx, spec) -> str:
+    """Record Claude's version in the registry without making it ACTIVE."""
+    mv = ctx.version(spec)
+    if mv not in S.current_model_versions(ctx.client):
+        S._stream(ctx.client, MODEL_VERSION_TABLE, [{
+            "model_version": mv, "task": TASK, "provider": spec.provider,
+            "model_id": spec.model_id, "call_mode": "BATCH",
+            "prompt_name": ctx.cfg.prompt_name, "prompt_sha256": P.prompt_sha256(ctx.system),
+            "prompt_text": ctx.system,
+            "params": json.dumps({"slot": spec.slot, "routes": ["anthropic_api_batch", "vertex_batch"],
+                                  "max_output_tokens": spec.max_output_tokens, "effort": "low"}),
+            "status": "STANDBY", "recorded_at": S.utcnow(),
+            "notes": "historical load via Anthropic API; joins the consensus once enabled on Vertex",
+        }])
+    return mv
+
+
+def submit(ctx, run_id, limit=None) -> dict:
+    spec = claude_spec(ctx.cfg)
+    mv = register_standby(ctx, spec)
+    docs = S.pending_docs(ctx.client, mv, limit or 100_000, lookback_days=None)
+    return submit_docs(ctx, run_id, spec, mv, docs)
+
+
+def submit_docs(ctx, run_id, spec, mv, docs) -> dict:
+    """Submit the given articles (dicts with doc_id, source_version, title,
+    body_text, language_iso639_3, published_at) as Anthropic batches."""
+    api = client()
+    from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
+    from anthropic.types.messages.batch_create_params import Request
+
+    batches = []
+    for start in range(0, len(docs), CHUNK):
+        chunk = docs[start:start + CHUNK]
+        batch_id = f"claude_api_{run_id.replace('-', '_')}_{start // CHUNK}"
+        mapping_table = f"{BQ_PROJECT}.batch.in_{batch_id}"
+        S.create_input_table(ctx.client, mapping_table, [{
+            "doc_id": d["doc_id"], "source_version": d["source_version"],
+            "custom_id": f"r{start + i:06d}", "request": {"route": "anthropic_api"},
+        } for i, d in enumerate(chunk)])
+        batch = api.messages.batches.create(requests=[
+            Request(custom_id=f"r{start + i:06d}",
+                    params=MessageCreateParamsNonStreaming(
+                        **request_params(spec, ctx.system, P.user_message(d), ctx.schema_for(spec))))
+            for i, d in enumerate(chunk)])
+        S.record_batch_state(ctx.client, {
+            "batch_id": batch_id, "run_id": run_id, "model_version": mv, "provider": PROVIDER,
+            "vertex_job_name": batch.id, "input_table": mapping_table, "output_table": None,
+            "n_requests": len(chunk), "state": "SUBMITTED", "submitted_at": S.utcnow(),
+            "billing_tag": BILLING_TAG})
+        batches.append({"batch_id": batch_id, "anthropic_batch": batch.id, "n_requests": len(chunk)})
+        log.info("submitted %s (%d requests)", batch.id, len(chunk))
+    return {"model_version": mv, "pending": len(docs), "batches": batches}
