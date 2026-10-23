@@ -138,3 +138,78 @@ def submit_docs(ctx, run_id, spec, mv, docs) -> dict:
         batches.append({"batch_id": batch_id, "anthropic_batch": batch.id, "n_requests": len(chunk)})
         log.info("submitted %s (%d requests)", batch.id, len(chunk))
     return {"model_version": mv, "pending": len(docs), "batches": batches}
+
+
+def collect(ctx, run_id) -> dict:
+    api = client()
+    out, written = {}, 0
+    for j in S.latest_batch_jobs(ctx.client):
+        if j.provider != PROVIDER:
+            continue
+        base = {k: j[k] for k in ("batch_id", "run_id", "model_version", "provider", "vertex_job_name",
+                                  "input_table", "output_table", "n_requests", "submitted_at")}
+        base["billing_tag"] = BILLING_TAG
+        batch = api.messages.batches.retrieve(j.vertex_job_name)
+        if batch.processing_status != "ended":
+            if j.state != "RUNNING":
+                S.record_batch_state(ctx.client, {**base, "state": "RUNNING"})
+            out[j.batch_id] = f"{batch.processing_status} ({batch.request_counts.processing} processing)"
+            continue
+        mapping = {r["custom_id"]: (r["doc_id"], r["source_version"])
+                   for r in S.read_rows(ctx.client, j.input_table)}
+        dates = S.doc_published_at(ctx.client, [d for d, _ in mapping.values()])
+        buffer, n_ok, n_err, n_rejected, cost = [], 0, 0, 0, 0.0
+        for result in api.messages.batches.results(j.vertex_job_name):
+            doc_id, version = mapping.get(result.custom_id, (None, None))
+            if doc_id is None:
+                continue
+            if result.result.type != "succeeded":  # errored / canceled / expired: pending again
+                n_rejected += 1
+                continue
+            message = result.result.message
+            cost += _cost(message.usage)
+            doc = {"doc_id": doc_id, "source_version": version, "published_at": dates.get(doc_id)}
+            text, error = answer_from_message(message)
+            if error is None:
+                try:
+                    rows = S.label_rows(doc, j.model_version, run_id, countries=P.validate(text, ctx.codes))
+                except P.ResponseError as exc:
+                    rows = S.label_rows(doc, j.model_version, run_id, error=str(exc))
+            else:
+                rows = S.label_rows(doc, j.model_version, run_id, error=error)
+            n_err += rows[0]["tag_status"] == "ERROR"
+            n_ok += rows[0]["tag_status"] != "ERROR"
+            buffer.extend(rows)
+            if len(buffer) >= 500:
+                S.write_labels(ctx.client, buffer)
+                written += len(buffer)
+                buffer = []
+        if buffer:
+            S.write_labels(ctx.client, buffer)
+            written += len(buffer)
+        S.record_batch_state(ctx.client, {
+            **base, "state": "COLLECTED", "completed_at": S.utcnow(), "n_succeeded": n_ok,
+            "n_failed": n_err + n_rejected, "est_cost_usd": round(cost, 2),
+            "error_summary": f"{n_rejected} requests errored/expired" if n_rejected else None})
+        out[j.batch_id] = {"ok": n_ok, "answer_errors": n_err, "rejected": n_rejected,
+                           "est_cost_usd": round(cost, 2)}
+    return {"batches": out, "rows_written": written}
+
+
+def wait_until_ended(ctx, poll_seconds=60, max_hours=24):
+    """Block until every submitted Anthropic batch has ended. BigQuery is read
+    once up front; the wait itself only polls Anthropic, so an expiring Google
+    token during a long wait does not matter."""
+    api = client()
+    open_jobs = [(j.batch_id, j.vertex_job_name)
+                 for j in S.latest_batch_jobs(ctx.client, states=("SUBMITTED", "RUNNING"))
+                 if j.provider == PROVIDER]
+    deadline = time.time() + max_hours * 3600
+    while time.time() < deadline:
+        states = {batch_id: api.messages.batches.retrieve(name).processing_status
+                  for batch_id, name in open_jobs}
+        if all(s == "ended" for s in states.values()):
+            return
+        log.info("waiting: %s", states)
+        time.sleep(poll_seconds)
+    raise TimeoutError("Anthropic batches still running after the wait limit")
