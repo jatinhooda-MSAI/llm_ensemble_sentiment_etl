@@ -47,6 +47,19 @@ def claude_request(system: str, user: str, max_tokens: int) -> dict:
     }
 
 
+def gemma_request(model_id: str, system: str, user: str, schema: dict, max_tokens: int) -> dict:
+    # json_object mode alone let Gemma answer "{}" for no countries; the full
+    # schema (verified 2026-10-24) keeps the required shape.
+    return {
+        "model": model_id if "/" in model_id else f"google/{model_id}",
+        "messages": [{"role": "system", "content": system + JSON_ONLY},
+                     {"role": "user", "content": user}],
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_schema", "json_schema": {
+            "name": "country_sentiment", "schema": schema, "strict": True}},
+    }
+
+
 def _openapi_schema(schema: dict) -> dict:
     """Gemini's responseSchema is an OpenAPI subset: drop additionalProperties."""
     if isinstance(schema, dict):

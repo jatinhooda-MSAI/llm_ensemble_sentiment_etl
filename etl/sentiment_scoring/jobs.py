@@ -217,6 +217,53 @@ def collect(ctx, run_id):
     return {"jobs": out, "rows_written": written}
 
 
+# ── serial ───────────────────────────────────────────────────────────────────
+
+@_logged("SCORE_SERIAL")
+def serial(ctx, run_id, limit=None, lookback_days=None):
+    out, written = {}, 0
+    for spec in ctx.cfg.enabled_models:
+        if spec.call_mode != "SERIAL":
+            continue
+        mv = ctx.version(spec)
+        docs = S.pending_docs(ctx.client, mv, limit or ctx.cfg.max_docs_per_model, lookback_days)
+        n_ok = n_err = n_transport = 0
+        buffer = []
+
+        def call(doc):
+            body = V.gemma_request(spec.model_id, ctx.system, P.user_message(doc), ctx.schema_for(spec),
+                                   spec.max_output_tokens)
+            return doc, V.gemma_text(ctx.vertex.chat_completion(spec.location, body))
+
+        with ThreadPoolExecutor(max_workers=ctx.cfg.serial_concurrency) as pool:
+            futures = [pool.submit(call, d) for d in docs]
+            for fut in as_completed(futures):
+                try:
+                    doc, text = fut.result()
+                except Exception as exc:  # transport failure: leave it pending for the next run
+                    n_transport += 1
+                    log.warning("[%s] request failed: %s", spec.slot, str(exc)[:200])
+                    if n_transport >= 25 and n_transport > n_ok:
+                        for f in futures:
+                            f.cancel()
+                        log.error("[%s] stopping: %d transport failures", spec.slot, n_transport)
+                        break
+                    continue
+                labels = _rows_for_answer(ctx, doc, mv, run_id, text=text)
+                n_err += labels[0]["tag_status"] == "ERROR"
+                n_ok += labels[0]["tag_status"] != "ERROR"
+                buffer.extend(labels)
+                if len(buffer) >= WRITE_CHUNK:
+                    written += len(buffer)
+                    buffer = _flush(ctx, buffer)
+        written += len(buffer)
+        _flush(ctx, buffer)
+        out[spec.slot] = {"pending": len(docs), "ok": n_ok, "answer_errors": n_err,
+                          "transport_failures": n_transport}
+    status = "PARTIAL" if any(v["transport_failures"] for v in out.values()) else "SUCCEEDED"
+    return {"models": out, "rows_written": written, "_status": status}
+
+
 # ── aggregate and bias ───────────────────────────────────────────────────────
 
 def aggregation_version(ctx) -> str:
