@@ -24,3 +24,34 @@ aggregation:
 bias:
   window_days: 14
   min_per_language: 10         # a language needs this many articles to enter the KL check
+
+# A batch job must read/write a dataset in its own location:
+#   Gemini batch: global endpoint + dataset batch (us-central1)  (verified 2026-10-24)
+#   Claude batch: not available until the model is enabled in Model Garden
+models:
+  - slot: gemini
+    provider: GOOGLE
+    model_id: gemini-3.8-flash        # GA 2026-09-02; global/us/eu only
+    call_mode: BATCH
+    location: global
+    batch_dataset: batch
+    max_output_tokens: 4096
+    enabled: true
+  - slot: claude
+    provider: ANTHROPIC
+    model_id: claude-sonnet-5-5
+    call_mode: BATCH
+    location: us-central1             # TODO verify once enabled in Model Garden
+    batch_dataset: batch
+    max_output_tokens: 4096           # adaptive thinking at low effort counts toward this
+    enabled: false                    # blocked on Vertex until enabled in Model Garden; history
+                                      # loaded via `run_sentiment_scoring.py claude-history`
+  - slot: gemma
+    provider: GOOGLE_OPEN
+    model_id: gemma-4-26b-a4b-it-maas # Experimental MaaS; global only; no batch
+    call_mode: SERIAL
+    location: global
+    max_output_tokens: 2048
+    country_field: free               # the African-code enum forced look-alike codes
+                                      # (Saudi Arabia -> Sudan); tested 2026-10-25
+    enabled: true
