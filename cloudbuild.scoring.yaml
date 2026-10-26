@@ -1,0 +1,13 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "Dockerfile.scoring", "-t", "${_IMAGE_REPO}:${BUILD_ID}", "."]
+images:
+  - "${_IMAGE_REPO}:${BUILD_ID}"
+substitutions:
+  _IMAGE_REPO: us-central1-docker.pkg.dev/your-gcp-project/your-artifact-repo/sentiment-scoring
+# Build as the pipeline's service account: the default compute SA lacks access to the
+# cloudbuild staging bucket in this project.
+serviceAccount: projects/your-gcp-project/serviceAccounts/your-service-account@your-gcp-project.iam.gserviceaccount.com
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 900s

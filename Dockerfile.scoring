@@ -1,0 +1,19 @@
+# Sentiment scoring job (country tagging + per-country sentiment via Vertex AI).
+# Runs as the pipeline's service account; reads silver.v_document, writes
+# silver.sentiment_label and the gold series.
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.scoring.txt .
+RUN pip install --no-cache-dir -r requirements.scoring.txt
+
+COPY run_sentiment_scoring.py .
+COPY etl/__init__.py etl/__init__.py
+COPY etl/sentiment_scoring/ etl/sentiment_scoring/
+COPY config/sentiment_models.yaml config/sentiment_models.yaml
+
+ENV PYTHONUNBUFFERED=1
+
+ENTRYPOINT ["python", "run_sentiment_scoring.py"]
+CMD ["scheduled"]
