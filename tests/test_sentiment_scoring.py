@@ -163,3 +163,77 @@ class TestProviders:
         assert _job_location("projects/1/locations/global/batchPredictionJobs/9") == "global"
         assert _doc_key({"doc_id": "d", "source_version": "v"}) == ("d", "v")
         assert _doc_key({"custom_id": "d|v"}) == ("d", "v")
+
+
+# ── Anthropic API history load ───────────────────────────────────────────────
+
+from types import SimpleNamespace as NS
+
+from etl.sentiment_scoring import anthropic_history as A
+from etl.sentiment_scoring.config import ModelSpec
+
+
+class TestAnthropicHistory:
+    SPEC = ModelSpec(slot="claude", provider="ANTHROPIC", model_id="claude-sonnet-5-5",
+                     call_mode="BATCH", location="us", max_output_tokens=4096, enabled=False)
+
+    def test_request_params_enforce_schema_and_cache_instructions(self):
+        schema = P.response_schema(list(CODES))
+        p = A.request_params(self.SPEC, "SYSTEM", "USER", schema)
+        assert p["model"] == "claude-sonnet-5-5" and p["max_tokens"] == 4096
+        assert p["system"] == [{"type": "text", "text": "SYSTEM", "cache_control": {"type": "ephemeral"}}]
+        assert p["output_config"]["format"] == {"type": "json_schema", "schema": schema}
+        assert p["output_config"]["effort"] == "low"
+        assert not {"temperature", "top_p", "top_k", "thinking"} & set(p)
+
+    def test_answer_text_skips_thinking_blocks(self):
+        msg = NS(stop_reason="end_turn", content=[NS(type="thinking", thinking=""),
+                                                  NS(type="text", text='{"countries": []}')])
+        assert A.answer_from_message(msg) == ('{"countries": []}', None)
+
+    def test_refusal_and_truncation_become_errors(self):
+        refused = NS(stop_reason="refusal", stop_details=NS(category="general_harms"), content=[])
+        assert A.answer_from_message(refused) == (None, "refusal: general_harms")
+        cut = NS(stop_reason="max_tokens", content=[NS(type="text", text='{"coun')])
+        assert A.answer_from_message(cut)[0] is None
+
+    def test_cost_estimate_uses_batch_rates(self):
+        usage = NS(input_tokens=1_000_000, output_tokens=100_000,
+                   cache_read_input_tokens=2_000_000, cache_creation_input_tokens=0)
+        assert round(A._cost(usage), 2) == round(1.00 + 0.50 + 0.20, 2)
+
+    def test_custom_ids_fit_the_api_pattern(self):
+        import re
+        assert re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", f"r{123456:06d}")
+
+
+# ── agreement evaluation ─────────────────────────────────────────────────────
+
+from etl.sentiment_scoring import agreement as AG
+
+
+class TestAgreement:
+    def test_compute_on_a_tiny_example(self):
+        docs = [{"doc_id": "d1", "source_version": "v", "lang": "fra"},
+                {"doc_id": "d2", "source_version": "v", "lang": "ara"}]
+        t = lambda d, c, m, lab: {"doc_id": d, "source_version": "v", "country_iso3": c,
+                                  "labeler_id": f"{m}|p|h", "sentiment_label": lab}
+        tags = [
+            t("d1", "KEN", "a", "NEGATIVE"), t("d1", "KEN", "b", "NEGATIVE"), t("d1", "KEN", "c", "NEGATIVE"),  # all agree
+            t("d1", "UGA", "c", "NEUTRAL"),                                                                    # only c
+            t("d2", "MAR", "a", "POSITIVE"), t("d2", "MAR", "b", "POSITIVE"), t("d2", "MAR", "c", "MIXED"),     # c odd one out
+        ]
+        grounding = [{"labeler_id": "c|p|h", "lang": "fra", "n": 4, "grounded": 1}]
+        rows = AG.compute(docs, tags, grounding, ["a", "b", "c"])
+        m = {(r["segment_key"], r["metric_name"]): r["metric_value"] for r in rows}
+        assert m[("ALL", "pairs")] == 3
+        assert m[("ALL", "share_all_agree")] == round(1 / 3, 6)
+        assert m[("ALL", "model:c:extra_tag_share")] == round(1 / 3, 6)
+        assert m[("ALL", "model:c:odd_one_out_share")] == 1.0
+        assert m[("ALL", "model:c:evidence_grounded")] == 0.25
+        assert m[("ALL", "rule:any_disagreement:human_share")] == round(2 / 3, 6)
+        assert m[("ALL", "rule:full_majority:human_share")] == 0.0       # UGA dropped, MAR 2-of-3
+        assert m[("ALL", "rule:country_majority:human_share")] == 0.5    # MAR label split
+        assert m[("ALL", "rule:without:c:human_share")] == 0.0           # a and b always agree
+        assert m[("ALL", "pair:a|b:label_agreement")] == 1.0
+        assert ("fra", "pairs") in m and ("ara", "pairs") in m
