@@ -113,3 +113,53 @@ class TestConfig:
         cfg = load_config()
         assert {m.slot: m.country_field for m in cfg.models} == \
             {"gemini": "enum", "claude": "enum", "gemma": "free"}
+
+
+# ── providers ────────────────────────────────────────────────────────────────
+
+from etl.sentiment_scoring import providers as V
+from etl.sentiment_scoring.jobs import _doc_key, _job_location
+
+
+class TestProviders:
+    SCHEMA = P.response_schema(list(CODES))
+
+    def test_gemini_request_uses_json_mode_without_additional_properties(self):
+        req = V.gemini_request("sys", "user", self.SCHEMA, 4096)
+        gc = req["generationConfig"]
+        assert gc["responseMimeType"] == "application/json"
+        assert "additionalProperties" not in json.dumps(gc["responseSchema"])
+        assert req["systemInstruction"]["parts"][0]["text"] == "sys"
+
+    def test_claude_request_has_no_sampling_params_and_low_effort(self):
+        req = V.claude_request("sys", "user", 4096)
+        assert req["anthropic_version"] == "vertex-2023-10-16"
+        assert req["output_config"] == {"effort": "low"}
+        assert "thinking" not in req  # adaptive thinking is the default; "disabled" 400s on Sonnet 5.5
+        assert not {"temperature", "top_p", "top_k"} & set(req)
+        assert req["system"].startswith("sys") and "JSON" in req["system"]
+
+    def test_gemma_model_name_gets_publisher_prefix(self):
+        req = V.gemma_request("gemma-x-maas", "s", "u", self.SCHEMA, 10)
+        assert req["model"] == "google/gemma-x-maas"
+        assert req["response_format"]["json_schema"]["schema"] == self.SCHEMA
+        assert V.gemma_request("google/gemma-x-maas", "s", "u", self.SCHEMA, 10)["model"] == "google/gemma-x-maas"
+
+    def test_text_extraction_skips_thoughts_and_thinking_blocks(self):
+        gem = {"candidates": [{"content": {"parts": [{"text": "plan", "thought": True},
+                                                     {"text": '{"countries": []}'}]}}]}
+        assert V.gemini_text(json.dumps(gem)) == '{"countries": []}'
+        cla = {"content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": "{}"}]}
+        assert V.claude_text(cla) == "{}"
+        gma = {"choices": [{"message": {"content": "{}"}}]}
+        assert V.gemma_text(gma) == "{}"
+
+    def test_hosts_by_location(self):
+        assert V._host("global") == "aiplatform.googleapis.com"
+        assert V._host("us") == "aiplatform.us.rep.googleapis.com"
+        assert V._host("us-central1") == "us-central1-aiplatform.googleapis.com"
+
+    def test_job_location_and_doc_key(self):
+        assert _job_location("projects/1/locations/global/batchPredictionJobs/9") == "global"
+        assert _doc_key({"doc_id": "d", "source_version": "v"}) == ("d", "v")
+        assert _doc_key({"custom_id": "d|v"}) == ("d", "v")
