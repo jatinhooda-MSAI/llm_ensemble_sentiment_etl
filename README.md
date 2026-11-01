@@ -4,6 +4,10 @@ An ETL pipeline on Google Cloud that collects news articles, has three LLMs labe
 
 Built between April and November 2026 as part of an industry practicum. All numbers are as of 26 October 2026.
 
+## The problem
+
+The product tracks how the news portrays African countries, as a daily score per country, for people deciding whether to invest or do business there. Sentiment must be **per article and per country**: one article can be good news for Morocco and bad news for Algeria. And it must work in Arabic, French and Swahili without translating first.
+
 ## Repository map and how to run
 
 | Path | What it is |
