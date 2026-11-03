@@ -34,6 +34,29 @@ Everything runs on Google Cloud: **BigQuery** stores the data, **Vertex AI** run
 
 We reused these tables from an existing data dictionary: `bronze.source_record`, `silver.document`, `gold.dim_country`, `gold.dim_source` and `audit.etl_run`. The rest is our design. One table, `silver.sentiment_label`, holds every model and human answer. The consensus, the human queue and the document list are views, so nothing is stored twice.
 
+## Design decisions
+
+The choices that shaped the pipeline: what we did instead, and why. Most apply to any pipeline that runs language models over collected text.
+
+| Decision | Instead of | Why |
+|---|---|---|
+| **The model tags countries, not the collector** | A rule-based script in the collection job (tried first): it matched country names and fell back to the publisher's country, so every Hespress story became Morocco. | It gave false positives and couldn't handle stories about several countries. The model already reads each article for sentiment, so it tags countries in the same call at no extra cost. |
+| **Score each (article, country) pair, only for countries the article is substantially about** | One country per article; later, four role labels (main subject, affected, actor, mentioned). | One article can be good news for one country and bad for another. One test with an exclusion list (lists, comparisons, background, a quoted person's home) is simpler for models and people than four roles. |
+| **Full article or drop the source** | Accepting RSS summaries and teasers. | Thin text corrupts sentiment. Financial Afrik was dropped, not patched. |
+| **Never overwrite raw data; a view serves the latest version** | Updating an article in place when the publisher edits it. | Every model answer traces to the exact text it read, and publisher corrections stay visible. |
+| **One generic way to recognize versions** | Per-outlet duplicate rules. | Stable IDs and content hashes work for every source; a normalized hash ignores formatting-only edits. Unchanged items are skipped before download (feed date, then ETag/Last-Modified, then hash). |
+| **Page through feeds until a known item, with a cap; backfill separately** | One feed page per run. | Hespress's 12-item feed lost more than half its posts between runs. The cap (10 pages, about 30 hours of posts) bounds each run; hitting it is logged as a possible gap. |
+| **Preview, prevent, then delete** | Deleting bad rows first. | Read-only previews caught real bugs, and deploying the filter first means deleted rows can't come back. |
+| **Everything after collection ignores the source** | Per-source handling in scoring. | Other teams keep adding sources. Any article in the shared document view is scored the same way, so a new source needs no scoring change. |
+| **One table for every answer; views for the rest** | Separate tables per model and for human labels, and a stored consensus. | Nothing is stored twice, and changing a rule (like best 2 of 3) is a view change, not a data migration. |
+| **Keep a model registry and a batch-job log** | A smaller schema without them (we dropped both, then brought them back). | You need to know which model versions are active and which batch jobs are still running. |
+| **Versions from a prompt hash** | Manual version numbers. | Any change to the model, prompt or answer format creates a new version automatically; old answers stay comparable. |
+| **Batch scoring twice a day** | Scoring each article as it arrives. | Batch costs about half as much, and a daily series doesn't need minute-fresh data. Gemma has no batch option, so it runs one request at a time. |
+| **No model confidence scores** | Asking each model how sure it is. | Closed models change and retire, so their self-reported confidence isn't stable. Agreement between models is the signal. |
+| **One vote per outlet per country per day** | Counting every article. | Hespress is half the collection and would drown out the other outlets. |
+| **Flag, never hide** | Hiding low-coverage days and failed bias checks. | Readers see the data with its warnings and decide for themselves. |
+| **Immutable image tags; jobs run as a service account** | A `:latest` tag and key files. | Every run traces to an exact image, and there are no keys to leak. |
+
 ## Collecting the news
 
 Every 6 hours a Cloud Run job collects full articles from BBC Swahili, BBC Arabic, Hespress (Morocco, Arabic), AllAfrica French and Africanews French. Per-outlet settings live in `config/sentiment_sources.yaml`, so adding an outlet is a config change.
