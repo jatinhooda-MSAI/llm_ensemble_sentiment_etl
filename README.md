@@ -63,6 +63,38 @@ Every 6 hours a Cloud Run job collects full articles from BBC Swahili, BBC Arabi
 
 **Health.** 102 of 103 scheduled runs succeeded from 22 September to 17 October. After the backfill there were 9,411 articles, about half from Hespress. **Still open:** a rights decision on AllAfrica, which republishes member papers, before scraping it at scale.
 
+## The three AI labelers
+
+The "agents" are AI labelers: one model, one article, one structured answer, run as scheduled batch jobs.
+
+**The task.** Each model gets the same prompt (`etl/sentiment_scoring/prompts/tag_and_sentiment_v1.md`) and the article in its original language, without the outlet's name. It returns JSON with:
+
+- the African countries the article is **substantially about**, at most 5 (not mere background, comparisons, list items or a quoted person's home);
+- a label per country, for an investor (POSITIVE, NEGATIVE, NEUTRAL, MIXED or UNCERTAIN), and a score from -1 to 1;
+- one or two quotes copied exactly from the article.
+
+**No confidence scores**: agreement between models is the signal.
+
+| | Gemini | Gemma | Claude |
+|---|---|---|---|
+| Model | `gemini-3.8-flash` | `gemma-4-26b-a4b-it-maas` | `claude-sonnet-5-5` |
+| Runs on | Vertex AI batch, twice a day | Vertex AI pay-per-token, one request per article, 2 in parallel | Anthropic Message Batches, once, for the history; paid personally by the author ($34.73) |
+| Thinking first | Low | None | Low |
+| Articles scored | 10,944 (first pass), then new ones | 11,087 (full re-score) | 11,016 |
+| In the vote | Yes | Yes | No: standby until enabled on Vertex AI (Model Garden) |
+
+**Why these three.** Gemini Flash is cheap and runs as a batch. Earlier Gemma models ranked best among open models on African-language benchmarks (AfroBench, IrokoBench). Claude comes from a different company. A `billing_tag` marks runs paid outside the project's own billing.
+
+**Versioning.** Each answer's `model_version` combines the model, prompt name and prompt hash. Any change makes a new version; old answers stay.
+
+**Final answer.** The `sentiment_consensus` view picks one per article and country: unanimous, provisional (model majority, flagged, until a person answers), human, two humans agreed, or contested (falls back to the flagged model majority).
+
+**Daily score.** Each article counts +1 (positive), -1 (negative) or 0 (neutral or mixed); UNCERTAIN is left out. One vote per outlet per country per day. Scores run from 0 to 100 (50 neutral), with an uncertainty range. Days with fewer than 3 articles or 2 outlets are flagged as low coverage but shown.
+
+**Bias check.** For a country covered in at least two languages, each language's label mix is compared with its overall mix (KL divergence; flag above 0.15). A gap can come from the outlets, not just the models. Flags never hide data.
+
+**First results** (Gemini's first pass, 24 October). 77% of articles were about at least one African country (1.24 per such article); 23% were about none. Labels: 32% positive, 33% negative, 28% neutral, 6% mixed. Morocco led with 4,050 articles, largely because of Hespress. The daily series covered 55 countries.
+
 ## Repository map and how to run
 
 | Path | What it is |
