@@ -95,6 +95,19 @@ The "agents" are AI labelers: one model, one article, one structured answer, run
 
 **First results** (Gemini's first pass, 24 October). 77% of articles were about at least one African country (1.24 per such article); 23% were about none. Labels: 32% positive, 33% negative, 28% neutral, 6% mixed. Morocco led with 4,050 articles, largely because of Hespress. The daily series covered 55 countries.
 
+## The labeling app
+
+- Each item is one **(article, country)** pair, shown with the full text.
+- Two questions: *Is this article substantially about this country?* If yes, *how does it portray it?* (5 options).
+- Labelers **never see the models' answers** or why an item is queued.
+- They log in with a personal code, see only their languages, and can skip, reopen and change answers.
+- The `labeling_queue` view holds model disagreements, a 5% random audit of unanimous items, and second opinions on 20% of human-labeled items; at most two people per item.
+- Answers are appended to `silver.sentiment_label` as `labeler_type = 'HUMAN'`, never edited.
+
+FastAPI plus one HTML page (`labeling_app/`), deployed on 24 October as a private Cloud Run service.
+
+**Status, honestly: deployed, never used.** The health check passed and the login rejected an unknown code, but no labeler accounts were created and there are no tests. Two likely issues were never exercised: **Skip probably re-shows the same item**, and the two-person limit is checked and written separately, so two people answering at once could exceed it.
+
 ## Repository map and how to run
 
 | Path | What it is |
