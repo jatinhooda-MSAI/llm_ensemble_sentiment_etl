@@ -131,6 +131,69 @@ FastAPI plus one HTML page (`labeling_app/`), deployed on 24 October as a privat
 
 **Status, honestly: deployed, never used.** The health check passed and the login rejected an unknown code, but no labeler accounts were created and there are no tests. Two likely issues were never exercised: **Skip probably re-shows the same item**, and the two-person limit is checked and written separately, so two people answering at once could exceed it.
 
+## The experiment: should we keep Gemma?
+
+**The problem.** Our starting rule was "any disagreement goes to a person". In the first two-model run (Gemini and Gemma, 1,532 pairs), 59% agreed fully, 16% were label splits (same country, different labels), and 23% were countries only Gemma named. With three models, 49% of 13,925 pairs (about 6,900) would go to people.
+
+**The method.** `etl/sentiment_scoring/agreement.py` compares the models on articles all three answered, per language, and writes to `gold.model_evaluation_slice`. Its first run covered 10,918 articles: 5,965 Arabic, 4,193 French, 400 Swahili and 281 English. It measures solo countries (named by no other model), quotes found, the odd one out, pairwise label agreement, and the load on people under three rules.
+
+**First results.** Gemma looked like the weak model.
+
+| | Gemini | Claude | Gemma |
+|---|---|---|---|
+| Solo countries (share of all pairs) | 1.5% | 1% | **19%** |
+| Quotes found in the article | 97% | 95% | **89%** |
+| Odd one out when the other two agree | 23% | 33% | **44%** |
+
+Label agreement by pair: Claude–Gemini 83%, Gemini–Gemma 80%, Claude–Gemma 77%. Gemma's solo countries were most common in Swahili (29%) and Arabic (23%), the very languages it was chosen for, and its quotes matched least there (84%, 88%). Label agreement was lowest in Arabic. Without Gemma, only 26% would go to people, so dropping it looked easy.
+
+**Disagreements** (paraphrased):
+
+- Debatable label splits: armed groups in the Central African Republic (Gemini and Gemma negative, Claude mixed); Russia backing Sudan against a wider arms embargo (negative, negative, neutral); the DRC's national dialogue (Gemini positive, the others mixed).
+- Gemini missed Djibouti, praised by the East African bloc for its election.
+
+**The discovery.** Gemma's strange countries, such as Uganda in an article about a Ukrainian ex-minister, were look-alikes:
+
+| The article was about | Gemma said |
+|---|---|
+| Ukraine (UKR) | Uganda (UGA) |
+| Syria (SYR) | Seychelles (SYC) |
+| Saudi Arabia (SAU) | Sudan (SDN) |
+| Kuwait (KWT) | Kenya (KEN) |
+| Oman (OMN) | Somalia (SOM) |
+| Iran (IRN) | Egypt (EGY) |
+
+The cause was our answer format: its country field accepted only African country codes. In our setup Gemma has no thinking step, so once it began writing Saudi Arabia's code, it was pushed onto the nearest allowed one. Gemini and Claude think briefly first, which likely let them leave such countries out. A second clue: 27.5% of Gemma's solo countries had no quote; the other models had none without one.
+
+**The test** (`experiments/gemma_enum_test.py`). On a fixed sample of 40 articles where only Gemma named a country and 15 unanimous ones, Gemma answered twice: with the old format and with a free-text country field (its 21 non-African codes were dropped). "Extra" countries are ones neither Gemini nor Claude named.
+
+- Extra countries: 66 in the stored answers, 70 re-run with the old format, **41** with the free field.
+- Arabic: 32 to 9. French: 30 to 29, as there the extras are real countries in lists.
+- Labels did not change (30 vs 31 matches with the other models); the 15 clean articles came out the same.
+- Noise: a plain re-run changed the country list in 10 of the 40 articles (none of the 15), so the drop from 70 to 41 is well beyond noise.
+
+**The fix.** Only Gemma changed: `country_field: free` in `config/sentiment_models.yaml` frees its country field, and non-African codes are dropped before storing. This is a new Gemma version; old answers stay. Re-scoring its whole history took about 4 hours 20 minutes, with no unusable answers. Gemini and Claude kept the old format: they rarely named a country alone, and changing them means re-scoring their history, Claude's again at personal cost.
+
+**Before and after.** The fix removed a third of Gemma's solo countries. The second run covered 10,926 articles.
+
+| | Before | After |
+|---|---|---|
+| Countries only Gemma named | 19% | **12.7%** |
+| Gemma's solo countries with no quote | 27.5% | 4% |
+| All three agree on country and label | 51% | 55% |
+
+By language, Gemma's solo countries fell to 11% in Arabic, 16% in Swahili and 12.5% in French (from 13%); English stayed at 21%. How it judges sentiment did not change: quotes found stayed at 89% and odd one out at 44%.
+
+| Rule (after the fix) | Items for people |
+|---|---|
+| Any disagreement, three models | about 5,900 of 12,929 pairs (45%; was 49%) |
+| Any disagreement, Gemini and Claude only | 26% of their pairs |
+| Any disagreement, Gemini and Gemma only (live) | 37% of their pairs |
+| Country by majority, label splits to people | about 3,000 (28% of the ~10,900 countries at least two models named) |
+| **Best 2 of 3**: people only when no label has a majority | **about 440 (4% of those ~10,900)** |
+
+We then rebuilt the daily series: 4,322 daily rows, 55 countries, 29 June to 25 October. It uses the live two-model consensus, so a label split stays out of the score until a person answers. The bias check flagged Algeria (0.35), Nigeria (0.27), Kenya (0.23) and Egypt (0.19); Libya and Morocco passed.
+
 ## Repository map and how to run
 
 | Path | What it is |
