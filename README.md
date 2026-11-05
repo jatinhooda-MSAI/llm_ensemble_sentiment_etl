@@ -198,6 +198,14 @@ We then rebuilt the daily series: 4,322 daily rows, 55 countries, 29 June to 25 
 
 **The scoring schedules never ran at first.** They were created on 24 October with a shell command containing `$JOB:run`; zsh read `$JOB:r` as a modifier and dropped the `:r`, so the scheduler called a job that did not exist. For two days nothing was scored on schedule, and 151 articles were never sent to Gemini. Fixed on 26 October.
 
+## Conclusion
+
+**Keep all three models and decide by the best 2 of 3**: a country counts when at least two models name it, its label is the one at least two gave, and only items with no majority go to a person.
+
+Widen the 5% random audit beyond unanimous items, to 2-to-1 decisions and to the countries only one model named (about 2,000), which are otherwise dropped unseen. That makes roughly **800 to 1,000 items for people**, plus a second person on 20%, instead of about 5,900.
+
+Gemma stays as the tie-breaker. Claude needs enabling on Vertex AI so three models vote on new articles. Agreement is not accuracy: models can agree and be wrong. Next, hand-label a few hundred items and measure each model against them. The deployed view (`etl/sentiment_scoring/sql/03_views.sql`) still sends any disagreement to a person; its `needs_human` condition must change to "no majority label".
+
 ## Repository map and how to run
 
 | Path | What it is |
