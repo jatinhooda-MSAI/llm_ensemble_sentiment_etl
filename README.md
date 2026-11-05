@@ -194,6 +194,10 @@ By language, Gemma's solo countries fell to 11% in Arabic, 16% in Swahili and 12
 
 We then rebuilt the daily series: 4,322 daily rows, 55 countries, 29 June to 25 October. It uses the live two-model consensus, so a label split stays out of the score until a person answers. The bias check flagged Algeria (0.35), Nigeria (0.27), Kenya (0.23) and Egypt (0.19); Libya and Morocco passed.
 
+## Other findings
+
+**The scoring schedules never ran at first.** They were created on 24 October with a shell command containing `$JOB:run`; zsh read `$JOB:r` as a modifier and dropped the `:r`, so the scheduler called a job that did not exist. For two days nothing was scored on schedule, and 151 articles were never sent to Gemini. Fixed on 26 October.
+
 ## Repository map and how to run
 
 | Path | What it is |
