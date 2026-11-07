@@ -206,6 +206,51 @@ Widen the 5% random audit beyond unanimous items, to 2-to-1 decisions and to the
 
 Gemma stays as the tie-breaker. Claude needs enabling on Vertex AI so three models vote on new articles. Agreement is not accuracy: models can agree and be wrong. Next, hand-label a few hundred items and measure each model against them. The deployed view (`etl/sentiment_scoring/sql/03_views.sql`) still sends any disagreement to a person; its `needs_human` condition must change to "no majority label".
 
+## T-RAG: temporally-routed retrieval-augmented generation
+
+T-RAG answers questions about economic, political and market news in ten African countries. Ask "How's the Naira doing?" and you get a short answer that cites its articles.
+
+As a retrieval-augmented generation (RAG) system, it first finds relevant news passages, and the language model may answer only from them. "Temporally routed" means a router first works out the question's time frame, which sets how much freshness counts.
+
+The T-RAG code is not part of this repository; this section describes how it worked.
+
+### How a question is answered
+
+```mermaid
+flowchart LR
+    Q["Question"] --> R["Router"]
+    R -->|in scope| S["Vector search"]
+    R -->|out of scope| F["Fixed reply"]
+    S -->|nothing found| F
+    S --> W["Time-weighted scoring"]
+    W --> D["Group duplicates"]
+    D --> G["Cited answer"]
+```
+
+1. **Route.** A fast Gemini Flash model reads the question and recent chat turns. It returns the intent (such as current state, history or comparison), countries, sectors and time frame ("this week" becomes a 7-day window). It also rewrites the question to stand alone, with pronouns resolved and acronyms spelled out. If the country is unclear, it asks.
+2. **Search.** The rewritten question becomes an embedding: 768 numbers that capture its meaning, so similar texts get similar numbers. Postgres, with the pgvector extension for vector search, returns the 50 closest article chunks. Country and any dates are strict filters. Sector is loose: chunks tagged "general" stay in.
+3. **Weigh time.** Each score mixes meaning and freshness: 60/40 for "what is happening now" questions, 95/5 for history. Freshness halves every "half-life", a period set by source type: 7 days for social media, 21 for wire services, 120 for central banks, a year for IMF and World Bank reports. Regulatory texts never fade.
+4. **Group duplicates.** Among the top 20, near-copies (one story from several outlets) are grouped. The best 8 groups go on; the extra copies are listed as corroborating sources.
+5. **Generate.** A Gemini Pro model gets the sources, labelled `[SRC:1]` to `[SRC:8]` with outlet, date and language. Its rules: cite every claim, use only these sources, never invent numbers or dates, flag thin or conflicting coverage, give no investment advice, and answer in English even from Swahili or Nigerian Pidgin sources. The prompt adds a warning when there are under 3 sources or all are over six months old. Afterwards, citations to sources that were never provided are deleted.
+
+Small talk gets a short reply with no search. Out-of-scope questions and empty searches get fixed replies, with no generator call. One says what T-RAG covers; the other reports no coverage and suggests naming a country or time period.
+
+### Where the data came from
+
+A job scheduled every 30 minutes copied new articles from a BigQuery news table into Postgres tables. It skipped duplicates and articles with no recognizable country. It then cut each new article into chunks of up to about 512 tokens (a token is about four characters), at paragraph or sentence breaks, overlapping by 64 words. Each chunk was embedded and stored in a vector-indexed table with its country, language, sector, source type and date. Sectors came from keyword lists, and source types from a registry file. "Watermarks" (bookmarks) tracked progress, so each run handled only new articles.
+
+### Key design decisions
+
+- **Route first**, so search gets clear filters and a standalone question.
+- **Time is part of relevance.** "Now" and history questions need different news, and sources age at different speeds.
+- **Settings in files, not code.** Weights, half-lives, keywords, the source registry and the prompts are config files, meant to be reviewed periodically.
+- **Ground or decline.** Every claim needs a real citation; with nothing to cite, T-RAG says so.
+- **Fail soft.** If the router fails, word matching on country and currency names takes over; if that finds none, search covers every indexed country instead of returning nothing. Re-indexing replaces an article's chunks, so re-runs are safe.
+
+### Status
+
+Built between April and early June 2026 as part of the same industry practicum. An April version added vector search to an older chat service. The May version, the first iteration of this routed design, was built to replace it, and was also packaged as a standalone demo API. Storage was under review. BigQuery vector search was preferred over Postgres + pgvector, because the articles already live in BigQuery: no sync step and no second copy. The move was not built.
+
 ## What is not done
 
 - Accuracy measured against human labels (no labelers onboarded yet).
