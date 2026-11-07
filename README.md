@@ -206,6 +206,15 @@ Widen the 5% random audit beyond unanimous items, to 2-to-1 decisions and to the
 
 Gemma stays as the tie-breaker. Claude needs enabling on Vertex AI so three models vote on new articles. Agreement is not accuracy: models can agree and be wrong. Next, hand-label a few hundred items and measure each model against them. The deployed view (`etl/sentiment_scoring/sql/03_views.sql`) still sends any disagreement to a person; its `needs_human` condition must change to "no majority label".
 
+## What is not done
+
+- Accuracy measured against human labels (no labelers onboarded yet).
+- The best-2-of-3 rule in the deployed view, and the wider audit.
+- Claude voting on new articles: it needs enabling on Vertex AI and its own model version (there, an organization policy blocks enforcing its answer format).
+- The app's Skip and two-person-limit issues, and its tests.
+- Further bias checks: word-association and name-swap tests.
+- Registering the five outlets in the company's source registry, and the AllAfrica rights decision.
+
 ## Repository map and how to run
 
 | Path | What it is |
