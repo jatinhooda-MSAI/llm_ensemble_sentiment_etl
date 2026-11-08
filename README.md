@@ -4,6 +4,15 @@ An ETL pipeline on Google Cloud that collects news articles, has three LLMs labe
 
 Built between April and November 2026 as part of an industry practicum. All numbers are as of 26 October 2026.
 
+## TL;DR
+
+- Five outlets covering Africa (Arabic, French, Swahili); three AI models (Gemini, Gemma, Claude) tagging countries and sentiment in about **11,000 articles** (English only from other teams); a human labeling app.
+- "Any disagreement goes to a person" meant about **5,900 of 12,929 pairs (45%)**.
+- Countries only Gemma named fell by a third (19% to 12.7%) after fixing **our bug**: the format allowed only African codes (Saudi Arabia became Sudan, Kuwait Kenya).
+- **Conclusion: best 2 of 3**, for country and label. People get only no-majority items: **about 440 (4%)**. With a 5% random audit of automatic decisions (today: unanimous only), about **800–1,000, not 5,900**, plus a second person on 20%.
+- Computed offline from stored answers. Live: two models until Claude is enabled on Google Cloud.
+- **For data engineers:** a [log of design decisions](#design-decisions). For example, a rule-based country tagger gave false positives, so the model that already reads each article now tags countries too.
+
 ## The problem
 
 The product tracks how the news portrays African countries, as a daily score per country, for people deciding whether to invest or do business there. Sentiment must be **per article and per country**: one article can be good news for Morocco and bad news for Algeria. And it must work in Arabic, French and Swahili without translating first.
